@@ -173,10 +173,13 @@ def validate_image_upload(uploaded_file) -> tuple[bool, str]:
 def secure_error_message(error: Exception) -> str:
     """Generate a safe error message that doesn't leak sensitive info."""
     error_str = str(error).lower()
-    # Map known errors to safe messages
     safe_messages = {
         "api_key": "Authentication error. Please check your API configuration.",
         "quota": "API quota exceeded. Please wait and try again.",
+        "rate": "Rate limit hit. Please wait a moment and try again.",
+        "unavailable": "AI service is temporarily busy. Retrying...",
+        "503": "AI service is temporarily overloaded. Please try again in a moment.",
+        "429": "Too many requests. Please wait a moment.",
         "timeout": "Request timed out. Please try again with shorter input.",
         "json": "Could not parse AI response. Please try again.",
         "connection": "Network error. Please check your connection.",
@@ -381,6 +384,29 @@ secure_session_cleanup()
 # ================================
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
+# Primary + fallback models (tried in order)
+AI_MODELS = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.5-flash']
+
+def ai_generate(model_name: str, contents) -> str:
+    """Call Gemini with retry across multiple models on 503/429 errors."""
+    last_error = None
+    for model in AI_MODELS:
+        for attempt in range(3):  # 3 retries per model
+            try:
+                response = client.models.generate_content(model=model, contents=contents)
+                return response.text
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                # Only retry on transient errors
+                if any(code in err_str for code in ['503', '429', 'unavailable', 'overloaded', 'rate']):
+                    time.sleep(1.5 * (attempt + 1))  # backoff: 1.5s, 3s, 4.5s
+                    continue
+                # Non-transient error, try next model
+                break
+    # All models failed — raise the last error so caller can handle it
+    raise last_error
+
 # ================================
 # 5. ANALYSIS FUNCTIONS
 # ================================
@@ -436,8 +462,7 @@ Return ONLY valid JSON with these keys:
 - "red_flags": List of specific flags found (max 5 items)
 - "recommendation": What the user should do next (1 sentence)"""
     try:
-        response = client.models.generate_content(model='gemini-flash-latest', contents=prompt)
-        result_text = response.text
+        result_text = ai_generate(AI_MODELS[0], prompt)
         result_text = re.sub(r'```json\s*', '', result_text)
         result_text = re.sub(r'```\s*', '', result_text)
         return json.loads(result_text)
@@ -486,11 +511,7 @@ Return ONLY valid JSON with these keys:
         # Use proper SDK types for image content
         blob = types.Blob(mime_type=mime_type, data=image_b64)
         image_part = types.Part(inline_data=blob)
-        response = client.models.generate_content(
-            model='gemini-flash-latest',
-            contents=[prompt, image_part]
-        )
-        result_text = response.text
+        result_text = ai_generate(AI_MODELS[0], [prompt, image_part])
         result_text = re.sub(r'```json\s*', '', result_text)
         result_text = re.sub(r'```\s*', '', result_text)
         return json.loads(result_text)
@@ -724,7 +745,7 @@ st.markdown("""
     <div class="main-subtitle">AUTOMATED THREAT DETECTION SYSTEM</div>
     <div class="status-line">
         SYS.STATUS: <span class="online">● ONLINE</span> &nbsp;|&nbsp;
-        AI.ENGINE: GEMINI-FLASH &nbsp;|&nbsp;
+        AI.ENGINE: GEMINI-3.6 &nbsp;|&nbsp;
         PROTOCOL: ACTIVE
     </div>
 </div>
