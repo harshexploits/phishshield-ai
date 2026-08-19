@@ -2,3 +2,6 @@ streamlit
 google-genai
 python-dotenv
 requests
+opencv-python-headless
+fpdf2
+python-whois

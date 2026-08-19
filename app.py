@@ -33,8 +33,8 @@ except ImportError:
     WHOIS_AVAILABLE = False
 
 try:
-    from pyzbar.pyzbar import decode as qr_decode
-    from PIL import Image as PILImage
+    import cv2
+    import numpy as np
     QR_AVAILABLE = True
 except ImportError:
     QR_AVAILABLE = False
@@ -737,21 +737,26 @@ def whois_lookup(domain: str) -> dict:
 # ================================
 
 def decode_qr_from_image(image_bytes: bytes) -> dict:
-    """Decode QR code from uploaded image."""
+    """Decode QR code from uploaded image using OpenCV."""
     if not QR_AVAILABLE:
         return {"error": "QR library not installed", "urls": []}
     try:
-        img = PILImage.open(io.BytesIO(image_bytes))
-        decoded = qr_decode(img)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return {"urls": [], "texts": [], "count": 0, "error": "Could not decode image"}
+        detector = cv2.QRCodeDetector()
+        data, points, _ = detector.detectAndDecode(img)
         urls = []
         texts = []
-        for obj in decoded:
-            data = obj.data.decode('utf-8', errors='ignore')
+        count = 0
+        if data:
+            count = 1
             if data.startswith(('http://', 'https://')):
                 urls.append(data)
             else:
                 texts.append(data)
-        return {"urls": urls, "texts": texts, "count": len(decoded), "error": None}
+        return {"urls": urls, "texts": texts, "count": count, "error": None}
     except Exception as e:
         return {"urls": [], "texts": [], "count": 0, "error": str(e)[:100]}
 
