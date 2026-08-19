@@ -219,9 +219,161 @@ def get_session_age() -> str:
         return f"{int(minutes // 60)}h {int(minutes % 60)}m"
 
 # ================================
+# 2b. ADVANCED SECURITY HARDENING
+# ================================
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal and injection attacks."""
+    if not filename:
+        return "unknown"
+    # Remove path separators (path traversal prevention)
+    filename = os.path.basename(filename)
+    # Remove null bytes
+    filename = filename.replace('\x00', '')
+    # Remove control characters
+    filename = re.sub(r'[\x00-\x1f\x7f]', '', filename)
+    # Only allow safe characters
+    filename = re.sub(r'[^a-zA-Z0-9._\- ]', '_', filename)
+    # Limit length
+    if len(filename) > 200:
+        name, ext = os.path.splitext(filename)
+        filename = name[:190] + ext
+    # Prevent double extensions (e.g., .php.jpg)
+    parts = filename.split('.')
+    if len(parts) > 2:
+        filename = parts[0] + '.' + parts[-1]
+    return filename or "unknown"
+
+def check_path_traversal(input_text: str) -> bool:
+    """Check if input contains path traversal attempts."""
+    traversal_patterns = [
+        r'\.\./', r'\.\.\\', r'%2e%2e/', r'%2e%2e\\',
+        r'\.\.%2f', r'\.\.%5c', r'%252e%252e',
+        r'/etc/passwd', r'/etc/shadow', r'c:\\windows',
+        r'/proc/', r'/sys/', r'\\\\\\\\',
+    ]
+    for pattern in traversal_patterns:
+        if re.search(pattern, input_text, re.IGNORECASE):
+            return True
+    return False
+
+def check_ssti_attempt(input_text: str) -> bool:
+    """Check if input contains Server-Side Template Injection attempts."""
+    ssti_patterns = [
+        r'\{\{.*\}\}', r'\{%.*%\}',           # Jinja2/Twig
+        r'\$\{.*\}',                              # Expression Language
+        r'<%=.*%>',                                  # ERB
+        r'#\{.*\}',                                 # Ruby
+        r'\{\{7.*\}\}',                           # Smarty
+        r'{{config}}', r'{{self.__class__}}',       # Common payloads
+        r'__class__', r'__subclasses__',             # Python introspection
+        r'\.__import__', r'exec\(', r'eval\(',     # Code execution
+    ]
+    for pattern in ssti_patterns:
+        if re.search(pattern, input_text, re.IGNORECASE):
+            return True
+    return False
+
+def check_xxe_attempt(content: bytes) -> bool:
+    """Check if file content contains XXE (XML External Entity) payloads."""
+    if not content:
+        return False
+    text = content[:10000].decode('utf-8', errors='ignore').lower()
+    xxe_patterns = [
+        r'<!DOCTYPE', r'<!ENTITY', r'SYSTEM\s+["\']',
+        r'file://', r'php://', r'smb://', r'ldap://',
+        r'<!ELEMENT', r'<!ATTLIST',
+        r'\[\s*<!\[CDATA\[',
+        r'public\s+"\S+"',
+    ]
+    for pattern in xxe_patterns:
+        if re.search(pattern, text):
+            return True
+    return False
+
+def sanitize_for_ai(text: str) -> str:
+    """Deep sanitize input before sending to AI model to prevent prompt injection."""
+    if not isinstance(text, str):
+        return ""
+    # Remove potential prompt injection markers
+    injection_markers = [
+        'ignore previous instructions',
+        'ignore all previous',
+        'disregard previous',
+        'forget everything',
+        'new instructions:',
+        'system prompt:',
+        'you are now',
+        'act as if',
+        'pretend you are',
+        'override:',
+        '[SYSTEM]',
+        '[INST]',
+        '<<SYS>>',
+    ]
+    lower_text = text.lower()
+    for marker in injection_markers:
+        if marker in lower_text:
+            # Replace the marker with safe text
+            text = re.sub(re.escape(marker), '[FILTERED]', text, flags=re.IGNORECASE)
+    # Limit line count to prevent prompt flooding
+    lines = text.split('\n')
+    if len(lines) > 200:
+        text = '\n'.join(lines[:200]) + '\n[TRUNCATED]'
+    return text.strip()
+
+def secure_session_cleanup():
+    """Clean up expired session data to prevent memory exhaustion attacks."""
+    # Clean old request timestamps
+    now = datetime.now()
+    timestamps = st.session_state.get("request_timestamps", [])
+    cutoff = now - timedelta(seconds=RATE_LIMIT_WINDOW * 2)
+    st.session_state["request_timestamps"] = [
+        t for t in timestamps
+        if datetime.fromisoformat(t) > cutoff
+    ]
+    # Trim scan history to max
+    history = st.session_state.get("scan_history", [])
+    if len(history) > MAX_SESSION_SCANS:
+        st.session_state["scan_history"] = history[:MAX_SESSION_SCANS]
+
+def generate_csrf_token() -> str:
+    """Generate a CSRF-like token for form validation."""
+    if "csrf_token" not in st.session_state:
+        st.session_state["csrf_token"] = secrets.token_hex(32)
+    return st.session_state["csrf_token"]
+
+def validate_request_integrity(user_input: str, uploaded_bytes: bytes = None) -> tuple[bool, str]:
+    """Master validation function — runs all security checks on input."""
+    # Path traversal check
+    if user_input and check_path_traversal(user_input):
+        st.session_state["blocked_attempts"] = st.session_state.get("blocked_attempts", 0) + 1
+        return False, "Input rejected: suspicious path traversal detected."
+
+    # SSTI check
+    if user_input and check_ssti_attempt(user_input):
+        st.session_state["blocked_attempts"] = st.session_state.get("blocked_attempts", 0) + 1
+        return False, "Input rejected: template injection attempt detected."
+
+    # XXE check on file uploads
+    if uploaded_bytes and check_xxe_attempt(uploaded_bytes):
+        st.session_state["blocked_attempts"] = st.session_state.get("blocked_attempts", 0) + 1
+        return False, "File rejected: potential XML external entity payload."
+
+    # Prompt injection check
+    if user_input:
+        cleaned = sanitize_for_ai(user_input)
+        if cleaned != user_input.strip():
+            # Don't reject, but log and use cleaned version
+            st.session_state["blocked_attempts"] = st.session_state.get("blocked_attempts", 0) + 1
+
+    return True, ""
+
+# ================================
 # 3. INITIALIZE SECURITY
 # ================================
 init_security_session()
+secure_session_cleanup()
 
 # ================================
 # 4. CONFIGURE AI MODEL
@@ -239,8 +391,10 @@ def detect_phishing_text(user_input: str) -> dict:
     if not valid:
         return {"verdict": "Error", "confidence": 0, "explanation": msg, "red_flags": [], "recommendation": "Please shorten your input and try again."}
 
-    # Security: sanitize
-    clean_input = sanitize_input(user_input)
+    # Security: deep sanitize for prompt injection
+    clean_input = sanitize_for_ai(user_input)
+    # Security: HTML sanitize
+    clean_input = sanitize_input(clean_input)
 
     prompt = f"""You are a cybersecurity expert. Analyze the following URL or email content for phishing indicators.
 
@@ -296,7 +450,9 @@ Return your analysis as a JSON with these exact keys:
 Return ONLY valid JSON, no other text."""
 
     try:
-        image_part = {"mime_type": mime_type, "data": image_bytes}
+        # Encode image to base64 for the new google-genai SDK
+        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+        image_part = {"mime_type": mime_type, "data": image_b64}
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=[prompt, image_part]
@@ -483,32 +639,7 @@ st.markdown("""
 .tip-title-3d { font-family:'Orbitron',sans-serif; font-size:0.85rem; font-weight:700; color:#00ffc8; letter-spacing:2px; margin-bottom:10px; }
 .tip-desc-3d { font-family:'Rajdhani',sans-serif; font-size:0.9rem; color:rgba(0,255,200,0.45); line-height:1.5; }
 
-/* ===== SECURITY DASHBOARD ===== */
-.sec-dash { background:rgba(10,15,30,0.85); border:1px solid rgba(0,255,200,0.15); border-radius:18px; padding:25px; position:relative; overflow:hidden; }
-.sec-dash::before { content:''; position:absolute; top:0;left:0;right:0; height:2px; background:linear-gradient(90deg,#00ffc8,#00b4ff,#7b2fff); }
-.sec-row { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.03); }
-.sec-key { font-family:'Share Tech Mono',monospace; font-size:0.8rem; color:rgba(0,255,200,0.45); letter-spacing:1px; text-transform:uppercase; }
-.sec-val { font-family:'Orbitron',sans-serif; font-size:0.85rem; font-weight:600; }
-.sec-ok { color:#00ffc8; }
-.sec-warn { color:#ffc107; }
-.sec-bad { color:#ff3355; }
-
-.sec-badge { display:inline-block; padding:3px 10px; border-radius:6px; font-family:'Orbitron',sans-serif; font-size:0.65rem; font-weight:700; letter-spacing:1px; text-transform:uppercase; }
-.sec-badge.active { background:rgba(0,255,200,0.15); color:#00ffc8; border:1px solid rgba(0,255,200,0.3); }
-.sec-badge.warning { background:rgba(255,193,7,0.15); color:#ffc107; border:1px solid rgba(255,193,7,0.3); }
-
-/* ===== SCAN HISTORY ===== */
-.history-item { display:flex; align-items:center; gap:14px; padding:12px 16px; margin:6px 0; background:rgba(10,15,30,0.6); border:1px solid rgba(0,255,200,0.08); border-radius:10px; transition:all 0.3s ease; }
-.history-item:hover { background:rgba(10,15,30,0.8); border-color:rgba(0,255,200,0.2); transform:translateX(4px); }
-.history-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
-.history-dot.safe { background:#00ffc8; box-shadow:0 0 8px rgba(0,255,200,0.5); }
-.history-dot.suspicious { background:#ffc107; box-shadow:0 0 8px rgba(255,193,7,0.5); }
-.history-dot.malicious { background:#ff3355; box-shadow:0 0 8px rgba(255,51,85,0.5); }
-.history-dot.error { background:#666; }
-.history-info { flex:1; }
-.history-verdict { font-family:'Orbitron',sans-serif; font-size:0.75rem; font-weight:600; letter-spacing:1px; }
-.history-preview { font-family:'Share Tech Mono',monospace; font-size:0.7rem; color:rgba(0,255,200,0.35); margin-top:2px; }
-.history-time { font-family:'Share Tech Mono',monospace; font-size:0.65rem; color:rgba(0,255,200,0.25); white-space:nowrap; }
+/* (Security internals hidden from UI for OPSEC) */
 
 /* ===== LOADER ===== */
 .loader-3d { text-align:center; padding:60px 20px; }
@@ -561,7 +692,6 @@ st.markdown("""
     <div class="status-line">
         SYS.STATUS: <span class="online">● ONLINE</span> &nbsp;|&nbsp;
         AI.ENGINE: GEMINI-1.5 &nbsp;|&nbsp;
-        SECURITY: HARDENED &nbsp;|&nbsp;
         PROTOCOL: ACTIVE
     </div>
 </div>
@@ -789,6 +919,19 @@ if analyze_clicked:
             st.warning("⚠ Please upload an image to analyze.")
         st.stop()
 
+    # --- Security: Advanced validation ---
+    check_text = user_input if has_text_input else ""
+    check_bytes = image_bytes if has_image_input else None
+    sec_valid, sec_msg = validate_request_integrity(check_text, check_bytes)
+    if not sec_valid:
+        st.markdown(f"""
+        <div class="sec-alert">
+            <div class="sec-alert-icon">🚫</div>
+            <div class="sec-alert-text">{html.escape(sec_msg)}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+
     # --- Loading ---
     loading_placeholder = st.empty()
     loading_placeholder.markdown("""
@@ -901,145 +1044,7 @@ if analyze_clicked:
         st.markdown(f"""<div class="stat-tile"><span class="stat-icon">🛡️</span><div class="stat-number" style="background:linear-gradient(135deg,{sc},{sc}88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">{status}</div><div class="stat-label">Security Level</div></div>""", unsafe_allow_html=True)
 
 # ================================
-# 13. SECURITY DASHBOARD
-# ================================
-
-st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
-
-st.markdown("""
-<div class="section-title" style="justify-content:center; font-size:1.2rem;">
-    <span class="dot" style="background:#7b2fff; box-shadow:0 0 10px rgba(123,47,255,0.5);"></span>
-    SECURITY CONFIGURATION
-    <span class="line" style="max-width:150px;"></span>
-</div>
-""", unsafe_allow_html=True)
-
-sec_col1, sec_col2 = st.columns(2)
-
-with sec_col1:
-    st.markdown("""
-    <div class="sec-dash">
-        <div class="section-title" style="font-size:0.9rem; margin-bottom:15px;">
-            <span class="dot" style="width:6px;height:6px;"></span>
-            INPUT SECURITY
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Input Sanitization</span>
-            <span class="sec-badge active">ACTIVE</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">XSS Prevention</span>
-            <span class="sec-badge active">ENABLED</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Script Injection Filter</span>
-            <span class="sec-badge active">ENABLED</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Event Handler Filter</span>
-            <span class="sec-badge active">ENABLED</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Input Length Limit</span>
-            <span class="sec-val sec-ok">50,000 chars</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Magic Byte Validation</span>
-            <span class="sec-badge active">ACTIVE</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">File Extension Check</span>
-            <span class="sec-badge active">ACTIVE</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with sec_col2:
-    total_scans = st.session_state.get("total_scans", 0)
-    blocked = st.session_state.get("blocked_attempts", 0)
-    last_scan = st.session_state.get("last_scan_time", "Never")
-    session_age = get_session_age()
-    req_count = len(st.session_state.get("request_timestamps", []))
-    history_count = len(st.session_state.get("scan_history", []))
-
-    blocked_class = "sec-warn" if blocked > 0 else "sec-ok"
-    rate_class = "sec-warn" if req_count > MAX_REQUESTS_PER_WINDOW * 0.7 else "sec-ok"
-
-    st.markdown(f"""
-    <div class="sec-dash">
-        <div class="section-title" style="font-size:0.9rem; margin-bottom:15px;">
-            <span class="dot" style="width:6px;height:6px;"></span>
-            SESSION & RATE LIMITING
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Rate Limiting</span>
-            <span class="sec-badge active">ENFORCED</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Limit</span>
-            <span class="sec-val sec-ok">{MAX_REQUESTS_PER_WINDOW} req/{RATE_LIMIT_WINDOW}s</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Current Requests</span>
-            <span class="sec-val {rate_class}">{req_count}/{MAX_REQUESTS_PER_WINDOW}</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Blocked Attempts</span>
-            <span class="sec-val {blocked_class}">{blocked}</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Session ID</span>
-            <span class="sec-val" style="font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:rgba(0,255,200,0.4);">{st.session_state.get('session_id', 'N/A')[:16]}...</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Session Age</span>
-            <span class="sec-val sec-ok">{session_age}</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Total Scans</span>
-            <span class="sec-val sec-ok">{total_scans}</span>
-        </div>
-        <div class="sec-row">
-            <span class="sec-key">Last Scan</span>
-            <span class="sec-val" style="font-size:0.75rem;color:rgba(0,255,200,0.5);">{html.escape(str(last_scan))}</span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ================================
-# 14. SCAN HISTORY
-# ================================
-
-scan_history = st.session_state.get("scan_history", [])
-if scan_history:
-    st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="section-title" style="justify-content:center; font-size:1.1rem;">
-        <span class="dot" style="background:#00b4ff; box-shadow:0 0 10px rgba(0,180,255,0.5);"></span>
-        SCAN HISTORY
-        <span class="line" style="max-width:150px;"></span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    history_html = ""
-    for entry in scan_history[:10]:
-        v_class = entry.get("verdict", "Error").lower()
-        dot_class = "safe" if v_class == "safe" else "suspicious" if v_class == "suspicious" else "malicious" if v_class == "malicious" else "error"
-        v_color = "#00ffc8" if v_class == "safe" else "#ffc107" if v_class == "suspicious" else "#ff3355" if v_class == "malicious" else "#888"
-        history_html += f"""
-        <div class="history-item">
-            <div class="history-dot {dot_class}"></div>
-            <div class="history-info">
-                <div class="history-verdict" style="color:{v_color};">{entry.get('verdict','?').upper()} — {entry.get('type','?').upper()}</div>
-                <div class="history-preview">{html.escape(entry.get('preview',''))}</div>
-            </div>
-            <div class="history-time">{entry.get('timestamp','')}</div>
-        </div>
-        """
-    st.markdown(history_html, unsafe_allow_html=True)
-
-# ================================
-# 15. CYBERSECURITY TIPS
+# 13. CYBERSECURITY TIPS
 # ================================
 
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
@@ -1079,6 +1084,6 @@ st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 st.markdown("""
 <div class="footer-futuristic">
     <div class="footer-brand">PHISHSHIELD AI</div>
-    <div class="footer-sub">POWERED BY GOOGLE GEMINI &nbsp;•&nbsp; SECURITY HARDENED &nbsp;•&nbsp; STAY VIGILANT</div>
+    <div class="footer-sub">POWERED BY GOOGLE GEMINI &nbsp;•&nbsp; STAY VIGILANT &nbsp;•&nbsp; STAY SAFE</div>
 </div>
 """, unsafe_allow_html=True)
