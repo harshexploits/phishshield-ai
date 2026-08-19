@@ -19,6 +19,31 @@ import secrets
 from datetime import datetime, timedelta
 from functools import wraps
 from urllib.parse import urlparse
+import urllib.request
+import urllib.error
+import socket
+import ssl
+import io
+from io import BytesIO
+
+try:
+    import whois as whois_lib
+    WHOIS_AVAILABLE = True
+except ImportError:
+    WHOIS_AVAILABLE = False
+
+try:
+    from pyzbar.pyzbar import decode as qr_decode
+    from PIL import Image as PILImage
+    QR_AVAILABLE = True
+except ImportError:
+    QR_AVAILABLE = False
+
+try:
+    from fpdf import FPDF
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 
 load_dotenv_available = False
 try:
@@ -519,6 +544,366 @@ Return ONLY valid JSON with these keys:
         return {"verdict": "Error", "confidence": 0, "explanation": secure_error_message(e), "red_flags": [], "recommendation": "Please try again."}
 
 # ================================
+# 5b. URL UNSHORTENER + REDIRECT CHAIN
+# ================================
+
+def unshorten_url(url: str) -> dict:
+    """Follow URL redirects and return the full chain."""
+    chain = []
+    current = url
+    max_redirects = 10
+    try:
+        parsed = urlparse(current)
+        if not parsed.scheme:
+            current = 'https://' + current
+            parsed = urlparse(current)
+
+        for i in range(max_redirects):
+            chain.append({"hop": i + 1, "url": current})
+            try:
+                req = urllib.request.Request(current, method='HEAD', headers={'User-Agent': 'Mozilla/5.0'})
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                resp = urllib.request.urlopen(req, timeout=5, context=ctx)
+                next_url = resp.geturl()
+                if next_url == current or next_url in [c["url"] for c in chain]:
+                    break
+                current = next_url
+            except urllib.error.HTTPError as e:
+                if e.code in (301, 302, 303, 307, 308) and e.headers.get('Location'):
+                    next_url = e.headers['Location']
+                    if not next_url.startswith('http'):
+                        next_url = urlparse(current)._replace(path=next_url).geturl()
+                    current = next_url
+                else:
+                    break
+            except Exception:
+                break
+
+        final_parsed = urlparse(current)
+        return {
+            "original": url,
+            "final": current,
+            "chain": chain,
+            "hops": len(chain),
+            "is_shortened": len(chain) > 1,
+            "final_domain": final_parsed.netloc,
+            "redirected": current != url,
+        }
+    except Exception:
+        return {"original": url, "final": url, "chain": [{"hop": 1, "url": url}], "hops": 0, "is_shortened": False, "final_domain": "", "redirected": False}
+
+# ================================
+# 5c. EMAIL HEADER PARSER
+# ================================
+
+def parse_email_headers(raw_headers: str) -> dict:
+    """Parse raw email headers and extract key fields."""
+    result = {
+        "from": "", "to": "", "subject": "", "reply_to": "",
+        "date": "", "message_id": "", "received": [],
+        "spf": "", "dkim": "", "dmarc": "",
+        "x_mailer": "", "return_path": "", "headers_raw": raw_headers,
+    }
+    lines = raw_headers.strip().split('\n')
+    current_key = ""
+    current_val = ""
+
+    for line in lines:
+        if line.startswith((' ', '\t')) and current_key:
+            result[current_key] += ' ' + line.strip()
+        else:
+            if current_key and current_val:
+                _store_header(result, current_key, current_val)
+            if ':' in line:
+                current_key, current_val = line.split(':', 1)
+                current_key = current_key.strip().lower()
+                current_val = current_val.strip()
+            else:
+                current_key = ""
+                current_val = ""
+    if current_key and current_val:
+        _store_header(result, current_key, current_val)
+
+    # Check SPF/DKIM/DMARC from Authentication-Results
+    for line in lines:
+        lower = line.lower()
+        if 'spf=' in lower:
+            m = re.search(r'spf=([\w.]+)', lower)
+            if m: result['spf'] = m.group(1)
+        if 'dkim=' in lower:
+            m = re.search(r'dkim=([\w.]+)', lower)
+            if m: result['dkim'] = m.group(1)
+        if 'dmarc=' in lower:
+            m = re.search(r'dmarc=([\w.]+)', lower)
+            if m: result['dmarc'] = m.group(1)
+
+    # Extract domain from From
+    if result['from']:
+        m = re.search(r'@([\w.-]+)', result['from'])
+        result['from_domain'] = m.group(1) if m else ""
+    else:
+        result['from_domain'] = ""
+
+    return result
+
+def _store_header(result: dict, key: str, val: str):
+    key_lower = key.lower()
+    if key_lower == 'from': result['from'] = val
+    elif key_lower == 'to': result['to'] = val
+    elif key_lower == 'subject': result['subject'] = val
+    elif key_lower == 'reply-to': result['reply_to'] = val
+    elif key_lower == 'date': result['date'] = val
+    elif key_lower == 'message-id': result['message_id'] = val
+    elif key_lower == 'received': result['received'].append(val)
+    elif key_lower == 'x-mailer': result['x_mailer'] = val
+    elif key_lower == 'return-path': result['return_path'] = val
+
+def analyze_email_headers_ai(headers: dict) -> dict:
+    """Use AI to analyze parsed email headers for phishing."""
+    header_summary = f"""From: {headers.get('from', 'N/A')}\nTo: {headers.get('to', 'N/A')}\nSubject: {headers.get('subject', 'N/A')}\nReply-To: {headers.get('reply_to', 'N/A')}\nReturn-Path: {headers.get('return_path', 'N/A')}\nDate: {headers.get('date', 'N/A')}\nFrom Domain: {headers.get('from_domain', 'N/A')}\nSPF: {headers.get('spf', 'N/A')}\nDKIM: {headers.get('dkim', 'N/A')}\nDMARC: {headers.get('dmarc', 'N/A')}\nReceived Hops: {len(headers.get('received', []))}\nX-Mailer: {headers.get('x_mailer', 'N/A')}"""
+
+    prompt = f"""You are a senior email security analyst. Analyze these email headers for phishing indicators.
+
+EMAIL HEADERS:\n{header_summary}\n
+Check specifically for:
+1. From domain vs Reply-To domain mismatch (impersonation)
+2. Return-Path mismatch with From address
+3. Failed SPF/DKIM/DMARC authentication
+4. Excessive Received hops (email forwarding/laundering)
+5. Suspicious X-Mailer (mass-mailing tools)
+6. From domain age/reputation (if you can tell)
+7. Subject line urgency or deception tactics
+
+Return ONLY valid JSON with:
+- "verdict": "Safe" | "Suspicious" | "Malicious"
+- "confidence": 0-100
+- "explanation": Plain-English summary (max 3 sentences)
+- "red_flags": List of specific flags found (max 5)
+- "recommendation": What the user should do next (1 sentence)
+- "header_summary": dict with key header fields for display"""
+
+    try:
+        result_text = ai_generate(AI_MODELS[0], prompt)
+        result_text = re.sub(r'```json\s*', '', result_text)
+        result_text = re.sub(r'```\s*', '', result_text)
+        parsed = json.loads(result_text)
+        parsed['header_data'] = headers
+        return parsed
+    except Exception as e:
+        return {"verdict": "Error", "confidence": 0, "explanation": secure_error_message(e), "red_flags": [], "recommendation": "Please try again.", "header_data": headers}
+
+# ================================
+# 5d. DOMAIN WHOIS LOOKUP
+# ================================
+
+def whois_lookup(domain: str) -> dict:
+    """Look up domain registration info."""
+    if not WHOIS_AVAILABLE:
+        return {"error": "WHOIS library not installed"}
+    try:
+        w = whois_lib.whois(domain)
+        creation = w.creation_date
+        if isinstance(creation, list):
+            creation = creation[0]
+        expiration = w.expiration_date
+        if isinstance(expiration, list):
+            expiration = expiration[0]
+
+        age_days = 0
+        if creation:
+            age_days = (datetime.now() - creation).days
+
+        return {
+            "domain": domain,
+            "registrar": str(w.registrar) if w.registrar else "Unknown",
+            "creation_date": str(creation) if creation else "Unknown",
+            "expiration_date": str(expiration) if expiration else "Unknown",
+            "age_days": age_days,
+            "name_servers": w.name_servers if w.name_servers else [],
+            "registrant_country": str(w.country) if w.country else "Unknown",
+            "registrant_org": str(w.org) if w.org else "Unknown",
+            "is_young": age_days < 90,
+            "is_expired": expiration and expiration < datetime.now() if expiration else False,
+            "privacy_protected": not bool(w.name),
+            "error": None,
+        }
+    except Exception as e:
+        return {"domain": domain, "error": str(e)[:100]}
+
+# ================================
+# 5e. QR CODE ANALYSIS
+# ================================
+
+def decode_qr_from_image(image_bytes: bytes) -> dict:
+    """Decode QR code from uploaded image."""
+    if not QR_AVAILABLE:
+        return {"error": "QR library not installed", "urls": []}
+    try:
+        img = PILImage.open(io.BytesIO(image_bytes))
+        decoded = qr_decode(img)
+        urls = []
+        texts = []
+        for obj in decoded:
+            data = obj.data.decode('utf-8', errors='ignore')
+            if data.startswith(('http://', 'https://')):
+                urls.append(data)
+            else:
+                texts.append(data)
+        return {"urls": urls, "texts": texts, "count": len(decoded), "error": None}
+    except Exception as e:
+        return {"urls": [], "texts": [], "count": 0, "error": str(e)[:100]}
+
+# ================================
+# 5f. BATCH URL ANALYSIS
+# ================================
+
+def extract_urls_from_text(text: str) -> list:
+    """Extract all URLs from text."""
+    url_pattern = re.compile(r'https?://[^\s<>"\']+')
+    urls = url_pattern.findall(text)
+    # Also detect bare domains
+    bare_pattern = re.compile(r'(?<![\w/])www\.[\w.-]+\.[a-z]{2,}[^\s<>"\']*', re.IGNORECASE)
+    urls.extend(bare_pattern.findall(text))
+    return list(dict.fromkeys(urls))  # dedupe preserving order
+
+def batch_analyze_urls(urls: list) -> list:
+    """Analyze multiple URLs at once using AI."""
+    if not urls:
+        return []
+    urls_text = '\n'.join(f'{i+1}. {u}' for i, u in enumerate(urls[:20]))  # max 20
+    prompt = f"""Analyze each URL below for phishing. For EACH URL provide a verdict.
+
+URLS:\n{urls_text}\n
+Return ONLY valid JSON as a list of objects, each with:
+- "url": the URL\n- "verdict": "Safe" | "Suspicious" | "Malicious"
+- "confidence": 0-100\n- "reason": Brief reason (max 10 words)
+
+Return a JSON array: [{{}}, {{}}, ...]"""
+    try:
+        result_text = ai_generate(AI_MODELS[0], prompt)
+        result_text = re.sub(r'```json\s*', '', result_text)
+        result_text = re.sub(r'```\s*', '', result_text)
+        return json.loads(result_text)
+    except Exception:
+        return [{"url": u, "verdict": "Error", "confidence": 0, "reason": "Analysis failed"} for u in urls]
+
+# ================================
+# 5g. PDF EXPORT
+# ================================
+
+def generate_pdf_report(result: dict, input_text: str, input_type: str) -> bytes:
+    """Generate a PDF report of the analysis."""
+    if not PDF_AVAILABLE:
+        return None
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 12, 'PhishShield AI - Threat Analysis Report', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True, align='C')
+    pdf.ln(8)
+
+    # Verdict
+    verdict = result.get('verdict', 'Unknown')
+    confidence = result.get('confidence', 0)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 10, f'Verdict: {verdict.upper()} (Confidence: {confidence}%)', ln=True)
+    pdf.ln(4)
+
+    # Explanation
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Explanation:', ln=True)
+    pdf.set_font('Helvetica', '', 10)
+    pdf.multi_cell(0, 6, result.get('explanation', 'N/A'))
+    pdf.ln(4)
+
+    # Red Flags
+    flags = result.get('red_flags', [])
+    if flags:
+        pdf.set_font('Helvetica', 'B', 11)
+        pdf.cell(0, 8, 'Red Flags Detected:', ln=True)
+        pdf.set_font('Helvetica', '', 10)
+        for i, f in enumerate(flags):
+            pdf.multi_cell(0, 6, f'  {i+1}. {f}')
+        pdf.ln(4)
+
+    # Recommendation
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Recommendation:', ln=True)
+    pdf.set_font('Helvetica', '', 10)
+    pdf.multi_cell(0, 6, result.get('recommendation', 'N/A'))
+    pdf.ln(4)
+
+    # Input
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, f'Analyzed Content ({input_type.upper()}):', ln=True)
+    pdf.set_font('Helvetica', '', 8)
+    pdf.multi_cell(0, 5, input_text[:2000] if input_text else 'Image upload')
+
+    # Footer
+    pdf.ln(10)
+    pdf.set_font('Helvetica', 'I', 8)
+    pdf.cell(0, 6, 'PhishShield AI | Powered by Google Gemini | For educational purposes', ln=True, align='C')
+
+    return bytes(pdf.output())
+
+# ================================
+# 5h. MULTILINGUAL SUPPORT
+# ================================
+
+def get_analysis_prompt(user_input: str, language: str = "en") -> str:
+    """Get the analysis prompt with language instruction."""
+    lang_map = {
+        "en": "English", "hi": "Hindi", "es": "Spanish", "fr": "French",
+        "de": "German", "pt": "Portuguese", "ja": "Japanese",
+        "ko": "Korean", "ar": "Arabic", "zh": "Chinese",
+        "ru": "Russian", "bn": "Bengali", "ur": "Urdu",
+    }
+    lang_name = lang_map.get(language, "English")
+    return f"""You are a senior cybersecurity analyst. Analyze the following input for phishing indicators.
+
+Think step-by-step like a reasoning agent. Do NOT default to 'Safe'. Instead, critically evaluate every element.
+
+IMPORTANT: Respond in {lang_name} language.
+
+INPUT:
+{user_input}
+
+STEP 1 — WHAT IS THIS?
+- Is this a URL? A full email? A chat message? A short link? Or something else?
+- Determine the category first.
+
+STEP 2 — THREAT ANALYSIS (check each):
+1. Urgency / fear tactics ("Act NOW!", "Account suspended!")
+2. Suspicious URLs (misspelled domains, unusual TLDs like .xyz .ru .tk, IP addresses, URL shorteners hiding destination)
+3. Requests for credentials (passwords, credit cards, OTP, SSN)
+4. Brand impersonation (fake PayPal, bank, Amazon, Microsoft, etc.)
+5. Sender legitimacy (spoofed email, mismatched display name vs address)
+6. Grammar/spelling errors common in phishing
+7. Too-good-to-be-true offers (lottery, prize, inheritance)
+8. Unusual attachments or encoding
+
+STEP 3 — CONTEXT CHECK:
+- Would a normal business or person send this?
+- Does the tone match what it claims to be?
+- Are there any inconsistencies?
+
+STEP 4 — VERDICT:
+Be honest and critical. If ANY red flag exists, lean toward Suspicious or Malicious.
+- "Safe" = NO red flags, legitimate source, normal content
+- "Suspicious" = 1-2 red flags, possibly phishing but not certain
+- "Malicious" = 3+ red flags, clearly phishing or scam
+
+Return ONLY valid JSON with these keys:
+- "verdict": "Safe" | "Suspicious" | "Malicious"
+- "confidence": 0-100
+- "explanation": Plain-English summary (max 3 sentences)
+- "red_flags": List of specific flags found (max 5 items)
+- "recommendation": What the user should do next (1 sentence)"""
+
+# ================================
 # 6. PAGE CONFIG
 # ================================
 st.set_page_config(
@@ -754,28 +1139,72 @@ st.markdown("""
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
 # ================================
-# 9. INPUT MODE SELECTOR (TEXT / IMAGE)
+# 9. TOP BAR — MODE + LANGUAGE + THEME
 # ================================
 
-st.markdown("""
-<div class="section-title" style="justify-content:center; font-size:1.2rem;">
-    <span class="dot"></span>
-    SELECT INPUT MODE
-    <span class="line" style="max-width:150px;"></span>
-</div>
-""", unsafe_allow_html=True)
+top_c1, top_c2, top_c3 = st.columns([3, 2, 2])
 
-mode_col1, mode_col2, mode_col3 = st.columns([2, 1, 2])
-with mode_col2:
+with top_c1:
+    st.markdown("""
+    <div class="section-title" style="font-size:1rem; margin-bottom:8px;">
+        <span class="dot"></span> SELECT INPUT MODE
+    </div>
+    """, unsafe_allow_html=True)
     input_mode = st.radio(
-        "",
-        ["📝 TEXT", "🖼️ IMAGE"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="input_mode"
+        "", ["📝 TEXT", "🖼️ IMAGE", "📧 HEADERS", "📷 QR CODE", "📋 BATCH URLs"],
+        horizontal=True, label_visibility="collapsed", key="input_mode"
     )
 
-is_text_mode = "TEXT" in input_mode
+with top_c2:
+    st.markdown("""
+    <div class="section-title" style="font-size:1rem; margin-bottom:8px;">
+        <span class="dot"></span> LANGUAGE
+    </div>
+    """, unsafe_allow_html=True)
+    analysis_language = st.selectbox(
+        "", [
+            ("en", "English"), ("hi", "Hindi"), ("es", "Spanish"),
+            ("fr", "French"), ("de", "German"), ("pt", "Portuguese"),
+            ("ja", "Japanese"), ("ko", "Korean"), ("ar", "Arabic"),
+            ("zh", "Chinese"), ("ru", "Russian"), ("bn", "Bengali"), ("ur", "Urdu"),
+        ],
+        format_func=lambda x: x[1], label_visibility="collapsed", key="lang_select"
+    )
+    selected_lang = analysis_language[0]
+
+with top_c3:
+    st.markdown("""
+    <div class="section-title" style="font-size:1rem; margin-bottom:8px;">
+        <span class="dot"></span> DISPLAY
+    </div>
+    """, unsafe_allow_html=True)
+    theme_mode = st.radio("", ["🌙 DARK", "☀️ LIGHT"], horizontal=True, label_visibility="collapsed", key="theme")
+    is_dark = "DARK" in theme_mode
+
+# Apply light theme overrides
+if not is_dark:
+    st.markdown("""<style>
+    .stApp { background: #f0f2f6 !important; }
+    .main-title { background: linear-gradient(135deg,#0083b0,#00b4db,#7b2fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .glass-panel { background: rgba(255,255,255,0.9) !important; border-color: rgba(0,180,255,0.2) !important; }
+    .section-title { color: #0083b0 !important; }
+    .section-title .dot { background: #0083b0 !important; box-shadow: 0 0 10px rgba(0,131,176,0.5) !important; }
+    .stTextArea textarea { background: rgba(255,255,255,0.95) !important; color: #1a1a2e !important; border-color: rgba(0,180,255,0.3) !important; }
+    .stTextArea textarea::placeholder { color: rgba(0,131,176,0.4) !important; }
+    .particle { display: none; }
+    .verdict-safe { background: linear-gradient(135deg,rgba(0,200,150,0.1),rgba(0,180,130,0.05)); border: 1px solid rgba(0,200,150,0.3); }
+    .verdict-suspicious { background: linear-gradient(135deg,rgba(255,193,7,0.1),rgba(255,150,0,0.05)); border: 1px solid rgba(255,193,7,0.3); }
+    .verdict-malicious { background: linear-gradient(135deg,rgba(255,51,85,0.1),rgba(220,30,60,0.05)); border: 1px solid rgba(255,51,85,0.3); }
+    .stat-tile { background: rgba(255,255,255,0.9) !important; border-color: rgba(0,180,255,0.15) !important; }
+    .tip-card-3d { background: rgba(255,255,255,0.9) !important; border-color: rgba(0,180,255,0.15) !important; }
+    .explanation-block { background: rgba(0,131,176,0.05); color: #1a1a2e; }
+    .red-flag { background: rgba(255,51,85,0.06); border-color: rgba(255,51,85,0.2); }
+    .flag-text { color: #1a1a2e; }
+    .rec-text { color: #1a1a2e; }
+    .tip-title-3d { color: #0083b0; }
+    .tip-desc-3d { color: #555; }
+    .footer-brand { background: linear-gradient(135deg,#0083b0,#00b4ff,#7b2fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    </style>""", unsafe_allow_html=True)
 
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
@@ -787,8 +1216,11 @@ user_input = ""
 uploaded_image = None
 image_bytes = None
 image_mime = None
+header_text = ""
+qr_image_bytes = None
+batch_text = ""
 
-if is_text_mode:
+if "TEXT" in input_mode:
     col_left, col_right = st.columns([5, 3], gap="large")
 
     with col_left:
@@ -844,8 +1276,7 @@ Customer Security Division"""
         user_input = st.session_state['ui_input']
         st.session_state['ui_input'] = ""
 
-else:
-    # IMAGE MODE
+elif "IMAGE" in input_mode:
     col_img_left, col_img_right = st.columns([5, 3], gap="large")
 
     with col_img_left:
@@ -929,6 +1360,137 @@ else:
         </div>
         """, unsafe_allow_html=True)
 
+elif "HEADERS" in input_mode:
+    # EMAIL HEADER MODE
+    col_h1, col_h2 = st.columns([5, 3], gap="large")
+    with col_h1:
+        st.markdown("""
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> EMAIL HEADERS <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        header_text = st.text_area(
+            "", height=250,
+            placeholder=">> Paste raw email headers here...\n\n   Copy from: Gmail > Show Original > Copy to Clipboard\n   Or Outlook: File > Properties > Internet Headers",
+            label_visibility="collapsed", key="header_input"
+        )
+    with col_h2:
+        st.markdown("""
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> HEADER ANALYSIS <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
+        <b style="color:#00ffc8;">📧 HOW TO GET HEADERS:</b><br><br>
+        <b>Gmail:</b> Open email > ⋮ > Show Original > Copy<br>
+        <b>Outlook:</b> Open email > File > Properties > Internet Headers<br>
+        <b>Yahoo:</b> Open email > ⋮ > View Raw Message<br><br>
+        <b style="color:#00ffc8;">🔍 WE CHECK:</b><br><br>
+        • Sender vs Reply-To mismatch<br>
+        • SPF / DKIM / DMARC status<br>
+        • Email relay chain anomalies<br>
+        • Spoofed display names
+        </div>
+        """, unsafe_allow_html=True)
+
+elif "QR" in input_mode:
+    # QR CODE MODE
+    col_q1, col_q2 = st.columns([5, 3], gap="large")
+    with col_q1:
+        st.markdown("""
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> QR CODE UPLOAD <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        qr_file = st.file_uploader("", type=["png","jpg","jpeg","gif","bmp"], label_visibility="collapsed", key="qr_upload")
+        if qr_file:
+            qr_image_bytes = qr_file.read()
+            qr_file.seek(0)
+            st.image(qr_file, use_container_width=True)
+            # Try immediate decode
+            if QR_AVAILABLE:
+                qr_result = decode_qr_from_image(qr_image_bytes)
+                if qr_result.get("urls"):
+                    st.success(f"🔗 Found {len(qr_result['urls'])} URL(s): " + ", ".join(qr_result["urls"][:3]))
+                elif qr_result.get("texts"):
+                    st.info(f"📝 Found text: {qr_result['texts'][0][:100]}")
+                elif qr_result.get("error"):
+                    st.warning(f"No QR code detected: {qr_result['error']}")
+                else:
+                    st.warning("No QR code found in this image.")
+            else:
+                st.warning("QR library not available. Install pyzbar.")
+    with col_q2:
+        st.markdown("""
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> QR PHISHING (QUISHING) <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
+        <b style="color:#00ffc8;">⚠️ QR CODES ARE A GROWING THREAT</b><br><br>
+
+        Attackers place malicious QR codes on:<br>
+        • Restaurant menus<br>
+        • Parking meters<br>
+        • Public posters<br>
+        • Phishing emails<br><br>
+
+        <b style="color:#00ffc8;">🔍 WE WILL:</b><br><br>
+        • Decode the hidden URL<br>
+        • Check the destination<br>
+        • Analyze for phishing indicators
+        </div>
+        """, unsafe_allow_html=True)
+
+elif "BATCH" in input_mode:
+    # BATCH URL MODE
+    col_b1, col_b2 = st.columns([5, 3], gap="large")
+    with col_b1:
+        st.markdown("""
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> BATCH URL INPUT <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        batch_text = st.text_area(
+            "", height=250,
+            placeholder=">> Paste multiple URLs (one per line) or paste email content to extract URLs:\n\n   https://example.com/link1\n   https://suspicious-site.xyz/verify\n   bit.ly/3xYzAbC",
+            label_visibility="collapsed", key="batch_input"
+        )
+    with col_b2:
+        st.markdown("""
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> BATCH MODE <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("""
+        <div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
+        <b style="color:#00ffc8;">📋 BATCH ANALYSIS</b><br><br>
+
+        Analyze up to <b>20 URLs</b> at once.<br><br>
+
+        <b style="color:#00ffc8;">💡 TIPS:</b><br><br>
+
+        • Paste email content — we'll extract URLs<br>
+        • One URL per line for best results<br>
+        • Results shown in a color-coded table<br>
+        • Great for checking email newsletters
+        </div>
+        """, unsafe_allow_html=True)
+
 # ================================
 # 11. ANALYZE BUTTON
 # ================================
@@ -962,21 +1524,20 @@ if analyze_clicked:
         """, unsafe_allow_html=True)
         st.stop()
 
-    # --- Validate input ---
-    has_text_input = is_text_mode and user_input and user_input.strip()
-    has_image_input = not is_text_mode and image_bytes is not None
+    # --- Determine what to analyze ---
+    has_text = "TEXT" in input_mode and user_input and user_input.strip()
+    has_image = "IMAGE" in input_mode and image_bytes is not None
+    has_headers = "HEADERS" in input_mode and header_text and header_text.strip()
+    has_qr = "QR" in input_mode and qr_image_bytes is not None
+    has_batch = "BATCH" in input_mode and batch_text and batch_text.strip()
 
-    if not has_text_input and not has_image_input:
-        if is_text_mode:
-            st.warning("⚠ Please enter a URL or email text to analyze.")
-        else:
-            st.warning("⚠ Please upload an image to analyze.")
+    if not any([has_text, has_image, has_headers, has_qr, has_batch]):
+        st.warning("⚠ Please provide input to analyze.")
         st.stop()
 
-    # --- Security: Advanced validation ---
-    check_text = user_input if has_text_input else ""
-    check_bytes = image_bytes if has_image_input else None
-    sec_valid, sec_msg = validate_request_integrity(check_text, check_bytes)
+    # --- Security validation ---
+    check_text = user_input if has_text else header_text if has_headers else batch_text if has_batch else ""
+    sec_valid, sec_msg = validate_request_integrity(check_text, qr_image_bytes if has_qr else None)
     if not sec_valid:
         st.markdown(f"""
         <div class="sec-alert">
@@ -996,15 +1557,99 @@ if analyze_clicked:
     </div>
     """, unsafe_allow_html=True)
 
-    # --- Run analysis ---
-    if has_text_input:
+    # --- Route to correct analysis ---
+    result = None
+    input_type = "text"
+    preview = ""
+
+    if has_text:
         input_type = "text"
+        # Auto-detect URLs and unshorten
+        urls_found = extract_urls_from_text(user_input)
+        if urls_found:
+            first_url = urls_found[0]
+            if any(s in first_url for s in ['bit.ly', 'tinyurl', 't.co', 'goo.gl', 'ow.ly', 'is.gd', 'buff.ly']):
+                redirect = unshorten_url(first_url)
+                if redirect.get("redirected"):
+                    user_input += f"\n\n[Auto-unshortened: {first_url} -> {redirect['final']} (hops: {redirect['hops']})]"
         result = detect_phishing_text(user_input)
         preview = user_input
-    else:
+
+    elif has_image:
         input_type = "image"
         result = detect_phishing_image(image_bytes, image_mime)
         preview = uploaded_image.name if uploaded_image else "uploaded image"
+
+    elif has_headers:
+        input_type = "email_header"
+        parsed = parse_email_headers(header_text)
+        result = analyze_email_headers_ai(parsed)
+        preview = f"From: {parsed.get('from', 'N/A')}"
+
+    elif has_qr:
+        input_type = "qr_code"
+        qr_result = decode_qr_from_image(qr_image_bytes)
+        if qr_result.get("urls"):
+            qr_url = qr_result["urls"][0]
+            # Unshorten + analyze
+            redirect = unshorten_url(qr_url)
+            analysis_url = redirect.get("final", qr_url)
+            qr_input = f"QR Code URL: {qr_url}\nFinal destination: {analysis_url}\nRedirect hops: {redirect.get('hops', 0)}\nDomain: {redirect.get('final_domain', '')}"
+            result = detect_phishing_text(qr_input)
+            result["qr_data"] = qr_result
+            result["redirect"] = redirect
+            preview = f"QR -> {analysis_url}"
+        elif qr_result.get("texts"):
+            result = detect_phishing_text(f"QR Code content (not a URL): {qr_result['texts'][0]}")
+            result["qr_data"] = qr_result
+            preview = f"QR text: {qr_result['texts'][0][:60]}"
+        else:
+            result = {"verdict": "Safe", "confidence": 90, "explanation": "No URL found in QR code. It may contain plain text or be unreadable.", "red_flags": [], "recommendation": "Try uploading a clearer image of the QR code."}
+            preview = "QR - no URL found"
+
+    elif has_batch:
+        input_type = "batch"
+        urls = extract_urls_from_text(batch_text)
+        if not urls:
+            result = {"verdict": "Error", "confidence": 0, "explanation": "No URLs found in the input.", "red_flags": [], "recommendation": "Paste URLs one per line or paste email content containing URLs."}
+            preview = batch_text[:80]
+        else:
+            batch_results = batch_analyze_urls(urls)
+            # Count verdicts
+            malicious_ct = sum(1 for r in batch_results if r.get("verdict") == "Malicious")
+            suspicious_ct = sum(1 for r in batch_results if r.get("verdict") == "Suspicious")
+            safe_ct = sum(1 for r in batch_results if r.get("verdict") == "Safe")
+            if malicious_ct > 0:
+                overall = "Malicious"
+            elif suspicious_ct > 0:
+                overall = "Suspicious"
+            else:
+                overall = "Safe"
+            result = {
+                "verdict": overall,
+                "confidence": 85 if overall != "Safe" else 90,
+                "explanation": f"Analyzed {len(urls)} URLs: {safe_ct} safe, {suspicious_ct} suspicious, {malicious_ct} malicious.",
+                "red_flags": [f"{r.get('url','')} — {r.get('verdict','?')} ({r.get('reason','')})" for r in batch_results if r.get("verdict") != "Safe"][:5],
+                "recommendation": f"Review the {malicious_ct + suspicious_ct} flagged URLs carefully.",
+                "batch_results": batch_results,
+                "batch_urls": urls,
+            }
+            preview = f"Batch: {len(urls)} URLs"
+
+    time.sleep(0.5)
+    loading_placeholder.empty()
+
+    # --- WHOIS enrichment for URL-based inputs ---
+    whois_data = None
+    if result and input_type in ("text", "batch"):
+        urls_check = extract_urls_from_text(preview if input_type == "text" else batch_text)
+        if urls_check:
+            try:
+                domain = urlparse(urls_check[0]).netloc
+                if domain:
+                    whois_data = whois_lookup(domain)
+            except Exception:
+                pass
 
     time.sleep(0.5)
     loading_placeholder.empty()
@@ -1076,13 +1721,93 @@ if analyze_clicked:
     </div>
     """, unsafe_allow_html=True)
 
-    # Raw content
-    if is_text_mode:
-        with st.expander("📄 VIEW RAW INPUT DATA"):
+    # --- PDF Export ---
+    if PDF_AVAILABLE and input_type != "batch":
+        pdf_bytes = generate_pdf_report(result, preview, input_type)
+        if pdf_bytes:
+            st.download_button("📄 Download PDF Report", data=pdf_bytes, file_name=f"phishshield-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf", mime="application/pdf", key="pdf_download")
+
+    # --- Batch Results Table ---
+    if result.get("batch_results"):
+        st.markdown("""
+        <div class="section-title" style="margin-top:20px;">
+            <span class="dot"></span> BATCH ANALYSIS RESULTS
+            <span class="line"></span>
+        </div>
+        """, unsafe_allow_html=True)
+        batch_html = "<div style='overflow-x:auto;'>"
+        for br in result["batch_results"]:
+            bv = br.get("verdict", "?")
+            bc = "#00ffc8" if bv == "Safe" else "#ffc107" if bv == "Suspicious" else "#ff3355"
+            bd = "safe" if bv == "Safe" else "suspicious" if bv == "Suspicious" else "malicious"
+            batch_html += f"""
+            <div class="history-item" style="border-left: 3px solid {bc};">
+                <div class="history-dot {bd}"></div>
+                <div class="history-info">
+                    <div class="history-verdict" style="color:{bc};">{bv.upper()}</div>
+                    <div class="history-preview">{br.get('url','')[:70]}</div>
+                    <div style="font-size:0.7rem;color:rgba(0,255,200,0.3);margin-top:2px;">{br.get('reason','')}</div>
+                </div>
+                <div class="history-time">{br.get('confidence',0)}%</div>
+            </div>
+            """
+        batch_html += "</div>"
+        st.markdown(batch_html, unsafe_allow_html=True)
+
+    # --- Email Header Details ---
+    if result.get("header_data"):
+        hd = result["header_data"]
+        st.markdown("""
+        <div class="section-title" style="margin-top:20px;">
+            <span class="dot"></span> EMAIL HEADER DETAILS
+            <span class="line"></span>
+        </div>
+        """, unsafe_allow_html=True)
+        hdr_html = """
+        <div class="sec-dash" style="padding:20px;">
+        """
+        for key, label in [("from", "FROM"), ("reply_to", "REPLY-TO"), ("return_path", "RETURN-PATH"), ("from_domain", "FROM DOMAIN"), ("spf", "SPF"), ("dkim", "DKIM"), ("dmarc", "DMARC")]:
+            val = hd.get(key, "N/A")
+            color = "#00ffc8" if key in ("spf", "dkim", "dmarc") and val.lower() == "pass" else "#ffc107" if key in ("spf", "dkim", "dmarc") and val.lower() == "fail" else "rgba(0,255,200,0.5)"
+            hdr_html += '<div class="sec-row"><span class="sec-key">' + label + '</span><span style="font-size:0.8rem;color:' + color + ';">' + html.escape(str(val)) + '</span></div>'
+        hdr_html += "</div>"
+        st.markdown(hdr_html, unsafe_allow_html=True)
+
+    # --- WHOIS Data ---
+    if whois_data and not whois_data.get("error"):
+        with st.expander("🔍 DOMAIN WHOIS INFORMATION"):
+            w_cols = st.columns(3)
+            with w_cols[0]:
+                st.markdown(f"**Domain:** {whois_data.get('domain', 'N/A')}")
+                st.markdown(f"**Registrar:** {whois_data.get('registrar', 'N/A')}")
+            with w_cols[1]:
+                st.markdown(f"**Created:** {whois_data.get('creation_date', 'N/A')}")
+                st.markdown(f"**Expires:** {whois_data.get('expiration_date', 'N/A')}")
+            with w_cols[2]:
+                age = whois_data.get('age_days', 0)
+                color = "red" if age < 30 else "orange" if age < 90 else "green"
+                st.markdown(f"**Age:** <span style='color:{color};font-weight:bold;'>{age} days</span>", unsafe_allow_html=True)
+                if whois_data.get('is_young'):
+                    st.warning("⚠ Domain registered less than 90 days ago — suspicious!")
+
+    # --- Redirect Chain (for URL inputs) ---
+    if input_type == "text" and user_input and "[Auto-unshortened" in user_input:
+        with st.expander("🔗 REDIRECT CHAIN DETECTED"):
+            st.info("This URL was shortened. The AI analysis includes the final destination.")
+            st.code(user_input.split("[Auto-unshortened")[0], language="text")
+
+    # --- Raw content ---
+    with st.expander(f"📄 VIEW RAW {input_type.upper()} DATA"):
+        if input_type == "text":
             st.code(user_input, language="text")
-    else:
-        with st.expander("📄 VIEW ANALYSIS METADATA"):
+        elif input_type == "image":
             st.json({"input_type": "image", "filename": uploaded_image.name, "mime_type": image_mime, "size_kb": round(uploaded_image.size / 1024, 1)})
+        elif input_type == "email_header":
+            st.code(header_text[:3000], language="text")
+        elif input_type == "batch":
+            st.code(batch_text[:3000], language="text")
+        elif input_type == "qr_code":
+            st.json(result.get("qr_data", {}))
 
     # Stats
     st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
