@@ -7,6 +7,7 @@
 
 import streamlit as st
 from google import genai
+from google.genai import types
 import os
 import json
 import re
@@ -396,29 +397,46 @@ def detect_phishing_text(user_input: str) -> dict:
     # Security: HTML sanitize
     clean_input = sanitize_input(clean_input)
 
-    prompt = f"""You are a cybersecurity expert. Analyze the following URL or email content for phishing indicators.
+    prompt = f"""You are a senior cybersecurity analyst. Analyze the following input for phishing indicators.
+
+Think step-by-step like a reasoning agent. Do NOT default to 'Safe'. Instead, critically evaluate every element.
 
 INPUT:
 {clean_input}
 
-Analyze for these red flags:
-1. Urgent language (e.g., "Action required", "Your account will be suspended")
-2. Suspicious links (e.g., misspelled domain names, unusual subdomains)
-3. Requests for personal information (passwords, credit cards, OTP)
-4. Impersonation of trusted organizations
-5. Unusual sender email addresses
-6. Grammar and spelling mistakes
+STEP 1 — WHAT IS THIS?
+- Is this a URL? A full email? A chat message? A short link? Or something else?
+- Determine the category first.
 
-Return your analysis as a JSON with these exact keys:
-- "verdict": One of ["Safe", "Suspicious", "Malicious"]
-- "confidence": A number between 0 and 100 (how sure are you?)
-- "explanation": A brief, plain-English explanation for non-technical users (max 3 sentences)
-- "red_flags": A list of specific red flags found (max 5 items)
-- "recommendation": What the user should do next (1 sentence)
+STEP 2 — THREAT ANALYSIS (check each):
+1. Urgency / fear tactics ("Act NOW!", "Account suspended!")
+2. Suspicious URLs (misspelled domains, unusual TLDs like .xyz .ru .tk, IP addresses, URL shorteners hiding destination)
+3. Requests for credentials (passwords, credit cards, OTP, SSN)
+4. Brand impersonation (fake PayPal, bank, Amazon, Microsoft, etc.)
+5. Sender legitimacy (spoofed email, mismatched display name vs address)
+6. Grammar/spelling errors common in phishing
+7. Too-good-to-be-true offers (lottery, prize, inheritance)
+8. Unusual attachments or encoding
 
-Return ONLY valid JSON, no other text."""
+STEP 3 — CONTEXT CHECK:
+- Would a normal business or person send this?
+- Does the tone match what it claims to be?
+- Are there any inconsistencies?
+
+STEP 4 — VERDICT:
+Be honest and critical. If ANY red flag exists, lean toward Suspicious or Malicious.
+- "Safe" = NO red flags, legitimate source, normal content
+- "Suspicious" = 1-2 red flags, possibly phishing but not certain
+- "Malicious" = 3+ red flags, clearly phishing or scam
+
+Return ONLY valid JSON with these keys:
+- "verdict": "Safe" | "Suspicious" | "Malicious"
+- "confidence": 0-100
+- "explanation": Plain-English summary (max 3 sentences)
+- "red_flags": List of specific flags found (max 5 items)
+- "recommendation": What the user should do next (1 sentence)"""
     try:
-        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+        response = client.models.generate_content(model='gemini-flash-latest', contents=prompt)
         result_text = response.text
         result_text = re.sub(r'```json\s*', '', result_text)
         result_text = re.sub(r'```\s*', '', result_text)
@@ -428,33 +446,48 @@ Return ONLY valid JSON, no other text."""
 
 def detect_phishing_image(image_bytes: bytes, mime_type: str) -> dict:
     """Analyze uploaded image for phishing indicators using Gemini Vision."""
-    prompt = """You are a cybersecurity expert analyzing a screenshot or image that might be a phishing attempt.
+    prompt = """You are a senior cybersecurity analyst examining an image. Think critically and reason step-by-step.
 
-Examine this image for:
+STEP 1 — WHAT IS THIS IMAGE?
+- Is this a screenshot of an email? A login page? A text message? A social media post?
+- Or is it unrelated to cybersecurity (e.g., a photo of food, a landscape, an animal, random image)?
+- If the image has NOTHING to do with phishing, emails, or security, set verdict to "Safe", confidence 95, explanation "This image is not related to email or phishing. It appears to be [describe what it is].", red_flags as empty list [], and recommendation "No action needed — this image is not a security concern."
+
+STEP 2 — IF IT IS SECURITY-RELATED, check for:
 1. Fake login pages or credential harvesting forms
 2. Suspicious URLs visible in the image
-3. Impersonation of trusted brands (banks, tech companies, government)
-4. Urgency tactics or threats
-5. Poor design quality or inconsistencies
-6. Requests for sensitive information
-7. Fake security warnings or alerts
-8. Suspicious email headers or sender addresses
+3. Impersonation of trusted brands (fake bank, tech company, government)
+4. Urgency tactics or threats ("Act now or lose access!")
+5. Poor design quality, logo inconsistencies, wrong colors
+6. Requests for sensitive info (passwords, credit cards, OTP)
+7. Fake security warnings, virus alerts, account lockout messages
+8. Suspicious email headers or spoofed sender addresses
 
-Return your analysis as a JSON with these exact keys:
-- "verdict": One of ["Safe", "Suspicious", "Malicious"]
-- "confidence": A number between 0 and 100
-- "explanation": A brief, plain-English explanation for non-technical users (max 3 sentences)
-- "red_flags": A list of specific red flags found in the image (max 5 items)
-- "recommendation": What the user should do next (1 sentence)
+STEP 3 — BE CRITICAL:
+- Do NOT assume it is safe just because it looks professional
+- Check for subtle red flags (slightly wrong logo, wrong URL, odd phrasing)
+- If anything seems off, flag it
 
-Return ONLY valid JSON, no other text."""
+STEP 4 — VERDICT:
+- "Safe" = No phishing indicators, or image is completely unrelated to security
+- "Suspicious" = Some red flags, could be phishing
+- "Malicious" = Clearly a phishing attempt, scam, or fake page
+
+Return ONLY valid JSON with these keys:
+- "verdict": "Safe" | "Suspicious" | "Malicious"
+- "confidence": 0-100
+- "explanation": Plain-English summary (max 3 sentences)
+- "red_flags": List of specific flags found (max 5 items, empty [] if none)
+- "recommendation": What the user should do next (1 sentence)"""
 
     try:
-        # Encode image to base64 for the new google-genai SDK
+        # Encode image to base64 for the google-genai SDK
         image_b64 = base64.b64encode(image_bytes).decode('utf-8')
-        image_part = {"mime_type": mime_type, "data": image_b64}
+        # Use proper SDK types for image content
+        blob = types.Blob(mime_type=mime_type, data=image_b64)
+        image_part = types.Part(inline_data=blob)
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-flash-latest',
             contents=[prompt, image_part]
         )
         result_text = response.text
@@ -691,7 +724,7 @@ st.markdown("""
     <div class="main-subtitle">AUTOMATED THREAT DETECTION SYSTEM</div>
     <div class="status-line">
         SYS.STATUS: <span class="online">● ONLINE</span> &nbsp;|&nbsp;
-        AI.ENGINE: GEMINI-1.5 &nbsp;|&nbsp;
+        AI.ENGINE: GEMINI-FLASH &nbsp;|&nbsp;
         PROTOCOL: ACTIVE
     </div>
 </div>
