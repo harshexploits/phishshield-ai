@@ -443,6 +443,33 @@ def ai_generate(model_name: str, contents) -> str:
     # All models failed — raise the last error so caller can handle it
     raise last_error
 
+def normalize_verdict(result: dict) -> dict:
+    """Normalize AI output to expected format."""
+    if not isinstance(result, dict):
+        return result
+    verdict = str(result.get('verdict', 'Error')).strip().lower()
+    verdict_map = {'safe': 'Safe', 'clean': 'Safe', 'legitimate': 'Safe', 'benign': 'Safe',
+        'suspicious': 'Suspicious', 'suspect': 'Suspicious', 'possibly phishing': 'Suspicious',
+        'malicious': 'Malicious', 'phishing': 'Malicious', 'scam': 'Malicious',
+        'dangerous': 'Malicious', 'harmful': 'Malicious', 'threat': 'Malicious'}
+    result['verdict'] = verdict_map.get(verdict, result.get('verdict', 'Error'))
+    confidence = result.get('confidence', 0)
+    if isinstance(confidence, str):
+        conf_map = {'very high': 95, 'high': 85, 'medium': 60, 'low': 30, 'very low': 15,
+            'certain': 95, 'likely': 75, 'possible': 50, 'unlikely': 25}
+        confidence = conf_map.get(confidence.lower().strip(), 50)
+    try:
+        confidence = int(confidence)
+    except (ValueError, TypeError):
+        confidence = 50
+    result['confidence'] = max(0, min(100, confidence))
+    if not isinstance(result.get('red_flags'), list):
+        result['red_flags'] = []
+    for key in ['explanation', 'recommendation']:
+        if not isinstance(result.get(key), str):
+            result[key] = str(result.get(key, 'No information available.'))
+    return result
+
 # ================================
 # 5. ANALYSIS FUNCTIONS
 # ================================
@@ -1615,10 +1642,10 @@ st.markdown("""
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
 # ================================
-# 9. TOP BAR — MODE + LANGUAGE + THEME
+# 9. TOP BAR — MODE + LANGUAGE
 # ================================
 
-top_c1, top_c2, top_c3 = st.columns([3, 2, 2])
+top_c1, top_c2 = st.columns([3, 2], gap="large")
 
 with top_c1:
     st.markdown("""
@@ -1653,303 +1680,6 @@ with top_c2:
         format_func=lambda x: x[1], label_visibility="collapsed", key="lang_select"
     )
     selected_lang = analysis_language[0]
-
-with top_c3:
-    st.markdown("""
-
-
-<div class="section-title" style="font-size:0.95rem; margin-bottom:6px;">
-<span class="dot"></span> ENVIRONMENT THEME
-</div>
-
-""", unsafe_allow_html=True)
-    theme_mode = st.radio("", ["\U0001f319 COSMIC PURPLE", "\u2728 CRYSTAL VIOLET"], horizontal=True, label_visibility="collapsed", key="theme")
-    is_dark = "COSMIC" in theme_mode
-
-# Apply Crystal Violet (Light) theme overrides
-if not is_dark:
-    st.markdown("""
-
-<style>
-/* ========================================
-CRYSTAL VIOLET — LIGHT MODE
-Frosted glass, electric violet, day cyber
-Radically different from Cosmic Purple:
-• White/silver backgrounds (not black)
-• Electric violet + indigo accents (not neon purple)
-• Sharp clean lines (not neon glow)
-• Blue-violet tones (not pink/magenta)
-======================================== */
-
-/* Override root variables for light mode */
-:root {
---bg-base:   #f0ebff;
---bg-deep:   #e8e0ff;
---bg-panel:  #ffffff;
---bg-card:   #f8f5ff;
---bg-input:  #ffffff;
---accent:    #6d28d9;
---accent2:   #4c1d95;
---hot:       #7c3aed;
---border:    rgba(109,40,217,0.25);
---border2:   rgba(109,40,217,0.5);
---fg:        #1e1040;
---fg2:       #4c1d95;
---fg3:       #6d28d9;
---shadow:    0 8px 32px rgba(109,40,217,0.15);
---glow-sm:   0 2px 12px rgba(109,40,217,0.2);
---glow-md:   0 4px 24px rgba(109,40,217,0.3);
-}
-
-/* Reset all backgrounds to light */
-html, body,
-.stApp,
-[data-testid="stAppViewContainer"],
-[data-testid="stAppViewBlockContainer"],
-[data-testid="stMain"],
-[data-testid="stMainBlockContainer"],
-[data-testid="stVerticalBlock"],
-[data-testid="stVerticalBlockBorderWrapper"],
-[data-testid="stHorizontalBlock"],
-[data-testid="stColumn"],
-div.block-container, div.main,
-.stTabs, [data-testid="stTabs"],
-[data-testid="stTabsTabPanel"],
-div[role="tabpanel"],
-[data-testid="stForm"],
-.element-container,
-[data-testid="stMarkdownContainer"] {
-background-color: var(--bg-base) !important;
-background: var(--bg-base) !important;
-color: var(--fg) !important;
-}
-
-/* Light background with soft violet gradient */
-.stApp::before {
-background:
-radial-gradient(ellipse 80% 45% at 50% -5%, rgba(109,40,217,0.18) 0%, transparent 60%),
-radial-gradient(circle at 5% 55%, rgba(124,58,237,0.1) 0%, transparent 40%),
-radial-gradient(circle at 95% 70%, rgba(76,29,149,0.1) 0%, transparent 45%),
-linear-gradient(180deg, #f0ebff 0%, #e8e0ff 100%) !important;
-}
-
-/* Subtle grid (dark lines on light background) */
-.stApp::after {
-background-image:
-linear-gradient(rgba(109,40,217,0.06) 1px, transparent 1px),
-linear-gradient(90deg, rgba(109,40,217,0.06) 1px, transparent 1px) !important;
-opacity: 0.6 !important;
-}
-
-/* Hide particles */
-.particle { display:none !important; }
-
-/* Title: deep violet gradient */
-.main-title {
-background: linear-gradient(135deg, #4c1d95 0%, #6d28d9 35%, #7c3aed 60%, #4c1d95 100%) !important;
-background-size: 300% 300% !important;
--webkit-background-clip: text !important; -webkit-text-fill-color: transparent !important;
-filter: drop-shadow(0 2px 8px rgba(109,40,217,0.3)) !important;
-}
-
-.main-subtitle { color: #6d28d9 !important; }
-.status-line {
-background: #ffffff !important;
-border: 1px solid rgba(109,40,217,0.3) !important;
-color: #4c1d95 !important;
-box-shadow: 0 2px 12px rgba(109,40,217,0.15) !important;
-}
-.status-line .online { color: #059669 !important; }
-
-/* Holo divider: violet on light */
-.holo-divider {
-background: linear-gradient(90deg, transparent, rgba(109,40,217,0.2), #6d28d9, #4c1d95, #7c3aed, rgba(109,40,217,0.2), transparent) !important;
-}
-.holo-divider::after { background: #6d28d9 !important; box-shadow: 0 0 12px #6d28d9 !important; }
-
-/* White frosted panels */
-.glass-panel {
-background: #ffffff !important;
-border: 1px solid rgba(109,40,217,0.2) !important;
-box-shadow: 0 4px 20px rgba(109,40,217,0.12), inset 0 1px 0 rgba(255,255,255,0.9) !important;
-}
-.glass-panel::before {
-background: linear-gradient(90deg, transparent, rgba(109,40,217,0.4), transparent) !important;
-}
-.glass-panel:hover {
-box-shadow: 0 8px 30px rgba(109,40,217,0.2) !important;
-border-color: rgba(109,40,217,0.4) !important;
-}
-.glass-panel *, .glass-panel p, .glass-panel span, .glass-panel div { color: #1e1040 !important; }
-
-/* Corner decorators: violet */
-.corner-decor::before, .corner-decor::after { border-color: #6d28d9 !important; }
-
-/* Section titles */
-.section-title { color: #4c1d95 !important; }
-.section-title .dot { background: #6d28d9 !important; box-shadow: 0 0 8px rgba(109,40,217,0.4) !important; }
-.section-title .line { background: linear-gradient(90deg, rgba(109,40,217,0.35), transparent) !important; }
-
-/* Textarea */
-.stTextArea textarea, textarea {
-background: #fdfbff !important; background-color: #fdfbff !important;
-border: 1.5px solid rgba(109,40,217,0.3) !important;
-color: #1e1040 !important;
-box-shadow: inset 0 1px 4px rgba(109,40,217,0.08) !important;
-}
-.stTextArea textarea:focus, textarea:focus {
-border-color: #6d28d9 !important;
-box-shadow: 0 0 0 3px rgba(109,40,217,0.15), inset 0 1px 4px rgba(109,40,217,0.08) !important;
-}
-.stTextArea textarea::placeholder, textarea::placeholder {
-color: rgba(109,40,217,0.4) !important;
-}
-
-/* Buttons */
-.stButton > button {
-background: linear-gradient(135deg, rgba(109,40,217,0.12), rgba(76,29,149,0.08)) !important;
-border: 1.5px solid rgba(109,40,217,0.35) !important; color: #4c1d95 !important;
-box-shadow: 0 2px 10px rgba(109,40,217,0.15) !important;
-}
-.stButton > button:hover {
-background: linear-gradient(135deg, rgba(109,40,217,0.22), rgba(76,29,149,0.18)) !important;
-border-color: #6d28d9 !important; color: #1e1040 !important;
-box-shadow: 0 4px 16px rgba(109,40,217,0.25) !important;
-}
-.stButton > button[kind="primary"] {
-background: linear-gradient(135deg, #4c1d95 0%, #6d28d9 50%, #7c3aed 100%) !important;
-border: none !important; color: #fff !important;
-box-shadow: 0 4px 20px rgba(109,40,217,0.4) !important;
-}
-.stButton > button[kind="primary"]:hover {
-box-shadow: 0 8px 30px rgba(109,40,217,0.55) !important;
-}
-
-/* Result panels: clean light background */
-.verdict-safe, .result-safe {
-background: linear-gradient(135deg, rgba(5,150,105,0.08) 0%, #ffffff 100%) !important;
-border: 1.5px solid rgba(5,150,105,0.4) !important;
-box-shadow: 0 4px 20px rgba(5,150,105,0.12) !important;
-}
-.verdict-suspicious, .result-suspicious {
-background: linear-gradient(135deg, rgba(217,119,6,0.08) 0%, #ffffff 100%) !important;
-border: 1.5px solid rgba(217,119,6,0.4) !important;
-box-shadow: 0 4px 20px rgba(217,119,6,0.12) !important;
-}
-.verdict-malicious, .result-malicious {
-background: linear-gradient(135deg, rgba(220,38,38,0.08) 0%, #ffffff 100%) !important;
-border: 1.5px solid rgba(220,38,38,0.4) !important;
-box-shadow: 0 4px 20px rgba(220,38,38,0.12) !important;
-animation: resultReveal 0.6s ease !important;
-}
-.result-safe .verdict-text, .verdict-safe .verdict-text   { color: #059669 !important; text-shadow: none !important; }
-.result-suspicious .verdict-text, .verdict-suspicious .verdict-text { color: #d97706 !important; text-shadow: none !important; }
-.result-malicious .verdict-text, .verdict-malicious .verdict-text  { color: #dc2626 !important; text-shadow: none !important; }
-
-.verdict-label { color: #6d28d9 !important; }
-
-/* Explanation block */
-.explanation-block {
-background: rgba(109,40,217,0.06) !important;
-border-left: 3px solid #6d28d9 !important;
-color: #1e1040 !important;
-}
-
-/* Red flags */
-.red-flag { background: rgba(220,38,38,0.05) !important; border-color: rgba(220,38,38,0.25) !important; }
-.flag-text { color: #1e1040 !important; }
-.flag-num { background: rgba(220,38,38,0.15) !important; }
-
-/* Rec box */
-.rec-box {
-background: linear-gradient(135deg, rgba(109,40,217,0.06), rgba(76,29,149,0.04)) !important;
-border-color: rgba(109,40,217,0.25) !important;
-}
-.rec-text { color: #1e1040 !important; }
-.rec-label { color: #4c1d95 !important; }
-
-/* Stat tiles: white cards */
-.stat-tile {
-background: #ffffff !important;
-border: 1.5px solid rgba(109,40,217,0.2) !important;
-box-shadow: 0 4px 16px rgba(109,40,217,0.1) !important;
-}
-.stat-tile:hover { box-shadow: 0 8px 24px rgba(109,40,217,0.2) !important; border-color: rgba(109,40,217,0.4) !important; }
-.stat-tile::before { background: linear-gradient(90deg, transparent, #6d28d9, transparent) !important; }
-.stat-number { background: linear-gradient(135deg, #4c1d95, #6d28d9, #7c3aed) !important; -webkit-background-clip: text !important; -webkit-text-fill-color: transparent !important; }
-.stat-label { color: rgba(76,29,149,0.7) !important; }
-
-/* Tip cards: white with violet border */
-.tip-card-3d {
-background: #ffffff !important;
-border: 1.5px solid rgba(109,40,217,0.22) !important;
-box-shadow: 0 4px 16px rgba(109,40,217,0.1) !important;
-}
-.tip-card-3d::before { background: linear-gradient(90deg, transparent, rgba(109,40,217,0.6), transparent) !important; }
-.tip-card-3d:hover { box-shadow: 0 8px 24px rgba(109,40,217,0.2) !important; border-color: rgba(109,40,217,0.45) !important; }
-.tip-title-3d { color: #4c1d95 !important; }
-.tip-desc-3d { color: #6d28d9 !important; }
-
-/* History rows */
-.history-row { background: #ffffff !important; border-color: rgba(109,40,217,0.18) !important; color: #1e1040 !important; }
-.history-row:hover { background: #f5f0ff !important; border-color: rgba(109,40,217,0.4) !important; }
-
-/* Footer */
-.footer-brand { background: linear-gradient(135deg, #4c1d95, #6d28d9, #7c3aed) !important; -webkit-background-clip: text !important; -webkit-text-fill-color: transparent !important; }
-.footer-sub { color: rgba(76,29,149,0.4) !important; }
-
-/* Scrollbar */
-::-webkit-scrollbar-track { background: #e8e0ff !important; }
-::-webkit-scrollbar-thumb { background: rgba(109,40,217,0.3) !important; }
-::-webkit-scrollbar-thumb:hover { background: rgba(109,40,217,0.6) !important; }
-
-/* Streamlit widgets */
-[data-testid="stSelectbox"] > div > div, .stSelectbox > div > div, [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-background: #ffffff !important; border: 1.5px solid rgba(109,40,217,0.3) !important; color: #1e1040 !important;
-}
-[data-baseweb="menu"],[data-baseweb="popover"],ul[data-baseweb="menu"] {
-background: #ffffff !important; border: 1.5px solid rgba(109,40,217,0.3) !important;
-}
-li[role="option"] { color: #1e1040 !important; }
-li[role="option"]:hover { background: rgba(109,40,217,0.08) !important; }
-[data-testid="stRadio"] label, .stRadio label { color: #4c1d95 !important; }
-[data-testid="stFileUploader"],[data-testid="stFileUploadDropzone"] {
-background: #ffffff !important; border: 2px dashed rgba(109,40,217,0.35) !important; color: #4c1d95 !important;
-}
-[data-testid="stTabs"] [role="tablist"] { background: #e8e0ff !important; border-bottom: 1px solid rgba(109,40,217,0.3) !important; }
-[data-testid="stTabs"] [role="tab"] { color: rgba(76,29,149,0.65) !important; }
-[data-testid="stTabs"] [role="tab"]:hover { color: #4c1d95 !important; background: rgba(109,40,217,0.1) !important; }
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] { color: #fff !important; background: linear-gradient(135deg,#4c1d95,#6d28d9) !important; border: 1px solid rgba(109,40,217,0.5) !important; box-shadow: 0 0 12px rgba(109,40,217,0.3) !important; }
-.streamlit-expanderHeader,[data-testid="stExpander"] summary,details summary {
-color: #4c1d95 !important; background: #f5f0ff !important; border: 1px solid rgba(109,40,217,0.2) !important;
-}
-[data-testid="stExpander"] { background: #f5f0ff !important; border: 1px solid rgba(109,40,217,0.15) !important; }
-label, .stLabel, [data-testid="stWidgetLabel"] > div, [data-testid="stWidgetLabel"] p,
-[data-testid="stMarkdownContainer"] > p, [data-testid="stMarkdownContainer"] > ul > li,
-[data-testid="stMarkdownContainer"] > h1, [data-testid="stMarkdownContainer"] > h2, [data-testid="stMarkdownContainer"] > h3 {
-color: #1e1040 !important;
-}
-[data-testid="stMetric"] { background: #ffffff !important; border: 1px solid rgba(109,40,217,0.2) !important; }
-[data-testid="stMetricValue"] { color: #4c1d95 !important; }
-[data-testid="stMetricDelta"] { color: #6d28d9 !important; }
-[data-testid="stMetricLabel"] { color: #6d28d9 !important; }
-[data-testid="stNumberInput"] input,[data-testid="stTextInput"] input {
-background: #ffffff !important; background-color: #ffffff !important;
-border: 1.5px solid rgba(109,40,217,0.3) !important; color: #1e1040 !important;
-}
-[data-testid="stAlert"] { background: #f5f0ff !important; color: #1e1040 !important; }
-[data-testid="stInfo"]    { background: rgba(99,102,241,0.08)  !important; border-left: 3px solid #6366f1 !important; }
-[data-testid="stSuccess"] { background: rgba(5,150,105,0.07)   !important; border-left: 3px solid #059669 !important; }
-[data-testid="stWarning"] { background: rgba(217,119,6,0.07)   !important; border-left: 3px solid #d97706 !important; }
-[data-testid="stError"]   { background: rgba(220,38,38,0.07)   !important; border-left: 3px solid #dc2626 !important; }
-[data-testid="stTooltipIcon"] { color: #6d28d9 !important; }
-hr { border-color: rgba(109,40,217,0.2) !important; }
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
-
-
 
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
