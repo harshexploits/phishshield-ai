@@ -763,6 +763,107 @@ def virustotal_lookup(target: str) -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)[:100]}
 
+def inspect_ssl_cert(domain: str) -> dict:
+    """Inspect SSL Certificate details and validity for a target domain."""
+    if not domain:
+        return {"valid": False, "error": "No domain provided"}
+    clean_domain = domain.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((clean_domain, 443), timeout=4) as sock:
+            with context.wrap_socket(sock, server_hostname=clean_domain) as ssock:
+                cert = ssock.getpeercert()
+                issuer = dict(x[0] for x in cert.get('issuer', []))
+                issuer_name = issuer.get('organizationName') or issuer.get('commonName') or "Unknown Issuer"
+                not_after = cert.get('notAfter')
+                expiry_dt = datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z') if not_after else None
+                days_left = (expiry_dt - datetime.now()).days if expiry_dt else 0
+                return {
+                    "valid": True,
+                    "issuer": issuer_name,
+                    "expires_in_days": days_left,
+                    "is_free_cert": any(fc in issuer_name.lower() for fc in ["let's encrypt", "zero-ssl", "cpanel", "cloudflare"]),
+                    "error": None
+                }
+    except Exception as e:
+        return {"valid": False, "error": str(e)[:100]}
+
+def inspect_webpage_meta(url: str) -> dict:
+    """Fetch HTTP headers and webpage title to detect brand impersonation mismatches."""
+    if not url or not url.startswith(('http://', 'https://')):
+        return {"title": "", "status_code": 0, "server": "", "impersonation_risk": False}
+    try:
+        resp = requests.get(url, timeout=4, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        title_match = re.search(r'<title>(.*?)</title>', resp.text, re.IGNORECASE | re.DOTALL)
+        page_title = title_match.group(1).strip() if title_match else ""
+        
+        brands = ["paypal", "microsoft", "apple", "netflix", "bank of america", "wellsfargo", "chase", "amazon", "google", "outlook"]
+        domain = urlparse(url).netloc.lower()
+        impersonated_brand = None
+        for b in brands:
+            if b in page_title.lower() and b not in domain:
+                impersonated_brand = b
+                break
+                
+        return {
+            "title": page_title[:100],
+            "status_code": resp.status_code,
+            "server": resp.headers.get('Server', 'Unknown')[:50],
+            "impersonated_brand": impersonated_brand,
+            "impersonation_risk": bool(impersonated_brand),
+            "error": None
+        }
+    except Exception as e:
+        return {"title": "", "status_code": 0, "server": "", "impersonated_brand": None, "impersonation_risk": False, "error": str(e)[:100]}
+
+def compute_threat_index(result: dict, whois_info: dict = None, ssl_info: dict = None, webpage_meta: dict = None, vt_info: dict = None) -> dict:
+    """Compute a multi-vector PhishShield Threat Score Index (0-100) and weighted risk breakdown."""
+    base_confidence = result.get('confidence', 50)
+    verdict = result.get('verdict', 'Safe')
+    
+    ai_score = (base_confidence * 0.9) if verdict == 'Malicious' else (base_confidence * 0.5) if verdict == 'Suspicious' else (100 - base_confidence) * 0.2
+    factors = [{"name": "AI Neural NLP Engine", "weight": "35%", "risk": "High" if ai_score > 60 else "Medium" if ai_score > 30 else "Low", "score": round(ai_score)}]
+
+    domain_score = 20
+    if whois_info and whois_info.get("is_young"):
+        domain_score = 85
+        factors.append({"name": "Domain Longevity (<90 days old)", "weight": "20%", "risk": "High", "score": 85})
+    elif whois_info and whois_info.get("age_days", 999) > 365:
+        domain_score = 10
+        factors.append({"name": "Domain Longevity (Established)", "weight": "20%", "risk": "Low", "score": 10})
+
+    ssl_score = 15
+    if ssl_info:
+        if not ssl_info.get("valid"):
+            ssl_score = 90
+            factors.append({"name": "SSL Certificate Invalid / Missing", "weight": "15%", "risk": "High", "score": 90})
+        elif ssl_info.get("is_free_cert"):
+            ssl_score = 45
+            factors.append({"name": "Free / Short-Lived SSL Certificate", "weight": "15%", "risk": "Medium", "score": 45})
+
+    meta_score = 10
+    if webpage_meta and webpage_meta.get("impersonation_risk"):
+        meta_score = 95
+        factors.append({"name": f"Brand Impersonation ({webpage_meta.get('impersonated_brand','').title()})", "weight": "15%", "risk": "Critical", "score": 95})
+
+    vt_score = 10
+    if vt_info and vt_info.get("status") == "success":
+        mal = vt_info.get("malicious", 0)
+        if mal > 0:
+            vt_score = min(100, 50 + (mal * 10))
+            factors.append({"name": f"VirusTotal Blacklisted ({mal} engines)", "weight": "15%", "risk": "Critical", "score": vt_score})
+
+    final_score = min(100, max(0, round((ai_score * 0.35) + (domain_score * 0.20) + (ssl_score * 0.15) + (meta_score * 0.15) + (vt_score * 0.15))))
+    risk_level = "CRITICAL THREAT" if final_score >= 80 else "SUSPICIOUS THREAT" if final_score >= 50 else "LOW RISK / SAFE"
+    risk_color = "#f43f5e" if final_score >= 80 else "#f59e0b" if final_score >= 50 else "#10b981"
+
+    return {
+        "threat_index": final_score,
+        "risk_level": risk_level,
+        "risk_color": risk_color,
+        "factors": factors
+    }
+
 # ================================
 # 5e. QR CODE ANALYSIS
 # ================================
@@ -2329,17 +2430,27 @@ if analyze_clicked:
     time.sleep(0.5)
     loading_placeholder.empty()
 
-    # --- WHOIS enrichment for URL-based inputs ---
+    # --- Threat Intelligence Multi-Vector Enrichment ---
     whois_data = None
-    if result and input_type in ("text", "batch"):
-        urls_check = extract_urls_from_text(preview if input_type == "text" else batch_text)
+    ssl_data = None
+    meta_data = None
+    vt_data = None
+
+    if result and input_type in ("text", "batch", "qr_code"):
+        urls_check = extract_urls_from_text(preview if input_type == "text" else batch_text if input_type == "batch" else preview)
         if urls_check:
             try:
-                domain = urlparse(urls_check[0]).netloc
+                target_url = urls_check[0]
+                domain = urlparse(target_url).netloc or target_url.split('/')[0]
                 if domain:
                     whois_data = whois_lookup(domain)
+                    ssl_data = inspect_ssl_cert(domain)
+                    meta_data = inspect_webpage_meta(target_url)
+                    vt_data = virustotal_lookup(domain)
             except Exception:
                 pass
+
+    threat_matrix = compute_threat_index(result, whois_data, ssl_data, meta_data, vt_data)
 
     time.sleep(0.5)
     loading_placeholder.empty()
@@ -2356,19 +2467,17 @@ if analyze_clicked:
     recommendation = result.get("recommendation", "No recommendation available.")
 
     v_map = {
-        "Safe": ("result-safe", "✅", "#00ffc8", "#00ffc8", "#00b4ff"),
-        "Suspicious": ("result-suspicious", "⚠️", "#ffc107", "#ffc107", "#ff9800"),
-        "Malicious": ("result-malicious", "🚨", "#ff3355", "#ff3355", "#cc0033"),
+        "Safe": ("result-safe", "✅", "#10b981", "#10b981", "#059669"),
+        "Suspicious": ("result-suspicious", "⚠️", "#f59e0b", "#f59e0b", "#d97706"),
+        "Malicious": ("result-malicious", "🚨", "#f43f5e", "#f43f5e", "#dc2626"),
     }
     vc, icon, color, bar_from, bar_to = v_map.get(verdict, ("result-error", "❌", "#888", "#666", "#888"))
 
     # Mode badge
-    mode_badge = f'<span style="font-family:Share Tech Mono,monospace;font-size:0.7rem;color:rgba(0,255,200,0.4);letter-spacing:2px;">[ MODE: {input_type.upper()} ]</span>'
+    mode_badge = f'<span style="font-family:Share Tech Mono,monospace;font-size:0.75rem;color:var(--text-secondary);letter-spacing:2px;">[ MODE: {input_type.upper()} ]</span>'
 
-    # --- Display results ---
+    # --- Main Result Panel ---
     st.markdown(f"""
-
-
 <div class="result-3d {vc}">
 <div style="display:flex; justify-content:space-between; align-items:center;">
 <div class="verdict-label">ANALYSIS COMPLETE</div>
@@ -2377,32 +2486,47 @@ if analyze_clicked:
 <div class="verdict-text">{icon} {verdict.upper()}</div>
 
 <div class="confidence-wrap">
-<div class="conf-label">CONFIDENCE LEVEL</div>
-<div class="conf-track">
-<div class="conf-fill" style="width: {confidence}%; --bar-from: {bar_from}; --bar-to: {bar_to};"></div>
+<div class="conf-header">
+<span>PHISHSHIELD THREAT INDEX (MULTI-VECTOR SCORE)</span>
+<span>{threat_matrix['threat_index']} / 100</span>
 </div>
-<div class="conf-value" style="color: {color};">{confidence}%</div>
+<div class="conf-track">
+<div class="conf-fill" style="width: {threat_matrix['threat_index']}%; background: linear-gradient(90deg, {bar_from}, {bar_to});"></div>
+</div>
+<div class="conf-value" style="color: {threat_matrix['risk_color']}; font-weight: bold; margin-top: 6px;">STATUS: {threat_matrix['risk_level']}</div>
 </div>
 
 <div class="explanation-block">
-<div class="conf-label" style="margin-bottom: 8px;">EXPLANATION</div>
+<div class="conf-label" style="margin-bottom: 8px;">ANALYSIS SUMMARY</div>
 {html.escape(explanation)}
 </div>
 </div>
-
 """, unsafe_allow_html=True)
+
+    # --- Multi-Vector Intelligence HUD Cards ---
+    if ssl_data or whois_data or vt_data or meta_data:
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            ssl_val = "Valid 🔐" if ssl_data and ssl_data.get("valid") else "Invalid / Missing ⚠️"
+            st.metric("SSL Certificate", ssl_val, delta=f"{ssl_data.get('expires_in_days', 0)}d left" if ssl_data and ssl_data.get("valid") else "High Risk")
+        with c2:
+            age_val = f"{whois_data.get('age_days', 0)} days" if whois_data and whois_data.get('age_days') else "Unknown"
+            st.metric("Domain Age", age_val, delta="Young Domain" if whois_data and whois_data.get("is_young") else "Established", delta_color="inverse" if whois_data and whois_data.get("is_young") else "normal")
+        with c3:
+            vt_val = f"{vt_data.get('malicious', 0)} Malicious" if vt_data and vt_data.get("status") == "success" else "Unconfigured"
+            st.metric("VirusTotal Engine", vt_val, delta="Clean" if vt_data and vt_data.get("malicious", 0) == 0 else "Flagged", delta_color="normal" if vt_data and vt_data.get("malicious", 0) == 0 else "inverse")
+        with c4:
+            meta_val = "Impersonation Risk 🚨" if meta_data and meta_data.get("impersonation_risk") else "Clean Match ✅"
+            st.metric("DOM Brand Match", meta_val, delta=meta_data.get("impersonated_brand", "").title() if meta_data and meta_data.get("impersonated_brand") else "Verified")
 
     # Red flags
     if red_flags:
         st.markdown(f"""
-
-
 <div class="section-title" style="margin-top: 25px;">
-<span class="dot" style="background: #ff3355; box-shadow: 0 0 10px rgba(255,51,85,0.5);"></span>
+<span class="dot" style="background: #f43f5e; box-shadow: 0 0 10px rgba(244,63,94,0.5);"></span>
 RED FLAGS DETECTED ({len(red_flags)})
-<span class="line" style="background: linear-gradient(90deg, rgba(255,51,85,0.3), transparent);"></span>
+<span class="line" style="background: linear-gradient(90deg, rgba(244,63,94,0.3), transparent);"></span>
 </div>
-
 """, unsafe_allow_html=True)
         flags_html = ""
         for i, f in enumerate(red_flags):
@@ -2411,13 +2535,10 @@ RED FLAGS DETECTED ({len(red_flags)})
 
     # Recommendation
     st.markdown(f"""
-
-
 <div class="rec-box">
-<div class="rec-label">💡 RECOMMENDED ACTION</div>
+<div class="rec-label">💡 RECOMMENDED DEFENSIVE ACTION</div>
 <div class="rec-text">{html.escape(recommendation)}</div>
 </div>
-
 """, unsafe_allow_html=True)
 
     # --- PDF Export ---
