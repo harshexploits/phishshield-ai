@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PhishShield AI Scanner</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="extension-card">
+    <div class="header">
+      <div class="shield-icon">🛡️</div>
+      <div class="title-group">
+        <h1 class="brand-title">PHISHSHIELD AI</h1>
+        <p class="brand-sub">Neural Threat Guard</p>
+      </div>
+    </div>
+
+    <div class="current-target">
+      <span class="label">TARGET ENDPOINT:</span>
+      <div id="targetUrl" class="url-box">Detecting active tab...</div>
+    </div>
+
+    <button id="scanBtn" class="primary-btn">
+      <span class="btn-text">⚡ INITIATE THREAT SCAN</span>
+    </button>
+
+    <div id="resultContainer" class="result-box hidden">
+      <div class="verdict-header">
+        <span class="verdict-label">STATUS</span>
+        <span id="verdictBadge" class="badge">ANALYZING</span>
+      </div>
+      <div id="verdictTitle" class="verdict-title">SCANNING...</div>
+      <p id="verdictReason" class="verdict-reason"></p>
+    </div>
+
+    <div class="footer">
+      <a href="http://localhost:8501" target="_blank" class="footer-link">Open Full Dashboard ↗</a>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

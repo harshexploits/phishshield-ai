@@ -1,123 +1,124 @@
-# 🛡️ PhishShield AI
+# 🛡️ PhishShield AI — Next-Gen Threat Defense Platform
 
-**AI-powered cybersecurity assistant for detecting phishing and online scams.**
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/)
+![Python Version](https://img.shields.io/badge/python-3.10%2B-purple?style=flat&logo=python)
+![Gemini AI](https://img.shields.io/badge/AI-Google%20Gemini-pink?style=flat&logo=google)
+![Security Hardened](https://img.shields.io/badge/Security-Hardened-emerald?style=flat&logo=shield)
+![License](https://img.shields.io/badge/license-MIT-blue?style=flat)
 
-## 🚀 Features
-
-- **URL Analysis**: Paste any suspicious URL and get instant analysis
-- **Email Analysis**: Paste email content to detect phishing attempts
-- **AI-Powered Detection**: Uses Google Gemini AI for accurate threat detection
-- **Clear Verdicts**: Safe, Suspicious, or Malicious ratings with confidence scores
-- **Red Flags**: Specific indicators highlighted for transparency
-- **User-Friendly**: Plain English explanations for non-technical users
-
-## 📋 Prerequisites
-
-- Python 3.8 or higher
-- Google Gemini API key (free tier available)
-
-## 🛠️ Installation
-
-1. **Clone or download this repository**
-
-2. **Navigate to the project folder:**
-   ```bash
-   cd phishshield-ai
-   ```
-
-3. **Install required packages:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Set up your API key:**
-   - Get a free Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-   - Open `.env` file and replace `your-api-key-here` with your actual API key
-
-## 🎯 Usage
-
-1. **Run the application:**
-   ```bash
-   streamlit run app.py
-   ```
-
-2. **Open your browser** and go to `http://localhost:8501`
-
-3. **Test with examples:**
-   - Click "Example: Suspicious URL" to test a phishing URL
-   - Click "Example: Phishing Email" to test a phishing email
-   - Click "Example: Safe URL" to test a legitimate site
-
-4. **Paste any URL or email content** and click "Analyze for Threats"
-
-## 🔍 What It Detects
-
-- Urgent language ("Your account will be suspended!")
-- Suspicious links (misspelled domains, unusual subdomains)
-- Requests for personal information (passwords, credit cards, OTP)
-- Impersonation of trusted organizations
-- Grammar and spelling mistakes
-- Unusual sender email addresses
-
-## 📊 Example Results
-
-**Suspicious URL Test:**
-- Input: `https://paypal-verify-account.xyz/confirm`
-- Verdict: Malicious
-- Red Flags: Misspelled domain, urgent language, requests for credentials
-
-**Safe URL Test:**
-- Input: `https://www.google.com`
-- Verdict: Safe
-- Confidence: 95%
-
-## 🛡️ Security Tips
-
-1. **Check before clicking** - Hover over links to see the actual URL
-2. **Never share OTP** - Legitimate companies never ask for OTP via email/SMS
-3. **Verify sender** - Check email addresses carefully for fake but similar addresses
-4. **When in doubt, don't click** - If something feels off, it probably is
-
-## 🚀 Deployment Options
-
-### Option 1: Streamlit Cloud (Easiest, Free)
-1. Push code to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Click "New App" → Select your repo → Deploy
-
-### Option 2: Render (Free)
-1. Create `requirements.txt` (already included)
-2. Go to [render.com](https://render.com) → "New Web Service"
-3. Connect GitHub repo → Deploy
-
-### Option 3: Hugging Face Spaces (Free)
-1. Go to [huggingface.co/spaces](https://huggingface.co/spaces)
-2. Click "New Space" → Select "Streamlit"
-3. Upload files and deploy
-
-## 📈 Future Enhancements
-
-- Browser extension (Chrome/Firefox)
-- WhatsApp bot integration
-- Email plugin for Gmail/Outlook
-- Deepfake image/video detection
-- Enterprise dashboard for businesses
-- VirusTotal integration for enhanced accuracy
-
-## 🤝 Contributing
-
-Feel free to submit issues, fork the repository, and create pull requests for any improvements.
-
-## 📝 License
-
-This project is open source and available for personal and educational use.
-
-## 🙏 Acknowledgments
-
-- Built with Streamlit for the web interface
-- Powered by Google Gemini AI for intelligent analysis
-- Designed with ❤️ for cybersecurity awareness
+> **PhishShield AI** is an advanced, AI-powered cybersecurity intelligence platform built with **Streamlit** and **Google Gemini AI (`google-genai`)**. It detects phishing, smishing, quishing, social engineering, credential harvesting, and suspicious domain patterns across messages, headers, QR codes, screenshots, and batch URLs.
 
 ---
 
-**⚡ Quick Start:** Just run `pip install -r requirements.txt` then `streamlit run app.py` and you're ready to go!
+## 🌟 Key Features
+
+- 📝 **Text & Link Analyzer**: Detects phishing in email bodies, SMS, social media messages, and URLs with built-in prompt injection defense.
+- 🖼️ **Vision & Screenshot Scanner**: Multimodal analysis of fake login pages, email captures, and suspicious screenshots using Gemini Multimodal Vision.
+- 📧 **Email Header Forensics**: Parses and evaluates SPF, DKIM, DMARC, Return-Path, and routing hops for spoofing and forgery.
+- 📷 **QR Code ("Quishing") Scanner**: Uses OpenCV to decode embedded QR code payload URLs and inspect target safety.
+- 📋 **Batch URL Inspector**: Scans up to 20 URLs simultaneously with risk breakdown metrics and threat summaries.
+- 🔗 **URL Unshortener & WHOIS**: Traces redirect chains (`bit.ly`, `tinyurl`) and domain creation age to flag newly registered burner domains.
+- 📄 **PDF Audit Export**: Generates sanitized audit reports.
+- 🌐 **13 Languages**: Provides threat briefing explanations in English, Hindi, Spanish, French, German, Arabic, Japanese, Korean, Chinese, Russian, Bengali, Urdu, and Portuguese.
+- 🌙 / ✨ **Dual 3D Themes**: Features **Cosmic Purple** (Dark Cyberpunk) & **Crystal Violet** (Light Daylight Cyber) themes.
+
+---
+
+## 📐 System Architecture
+
+```mermaid
+flowchart TD
+    User([👤 User / Browser Extension]) -->|Input Text / Image / Headers / QR| Interface[🛡️ PhishShield AI Streamlit UI]
+    
+    subgraph Security Layer
+        Interface --> Sanitize[🔒 Anti-XSS & SSTI Sanitizer]
+        Sanitize --> RateLimit[⏱️ Rate Limiter - 15 req/min]
+    end
+
+    subgraph Intelligence Core
+        RateLimit -->|Prompt & Payload| Gemini[🧠 Google Gemini AI Engine]
+        RateLimit -->|Image & Vision| GeminiVision[👁️ Gemini Vision API]
+        RateLimit -->|Domain Check| WHOIS[🌐 WHOIS & Registrar Lookup]
+        RateLimit -->|URL Tracing| Unshorten[🔗 Redirect Chain Unshortener]
+        RateLimit -->|Threat Intel| VT[🦠 VirusTotal API]
+    end
+
+    Gemini --> Verdict[📊 Threat Verdict & Confidence Score]
+    GeminiVision --> Verdict
+    WHOIS --> Verdict
+    VT --> Verdict
+
+    Verdict --> PDF[📄 PDF Security Report]
+    Verdict --> UI[📱 3D Cyber HUD Result Card]
+```
+
+---
+
+## 🚀 Quick Start (Local Setup)
+
+### 1. Clone & Install Dependencies
+```bash
+git clone https://github.com/your-username/phishshield-ai.git
+cd phishshield-ai
+
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 2. Configure Environment
+Create a `.env` file in the root directory:
+```ini
+GEMINI_API_KEY=your_gemini_api_key_here
+VIRUSTOTAL_API_KEY=your_virustotal_api_key_here_optional
+```
+
+### 3. Launch App
+```bash
+streamlit run app.py
+```
+Open your browser at `http://localhost:8501`.
+
+---
+
+## 🌐 Cloud Deployment Guide
+
+### Option 1: Streamlit Community Cloud (Free - Recommended)
+1. Push your repository to GitHub.
+2. Go to [share.streamlit.io](https://share.streamlit.io) and click **"New App"**.
+3. Select your repository `phishshield-ai` and set main file path to `app.py`.
+4. Under **"Advanced Settings" -> "Secrets"**, add your API key:
+   ```toml
+   GEMINI_API_KEY = "your_gemini_api_key_here"
+   ```
+5. Click **Deploy**!
+
+---
+
+## 🧩 Chrome Extension Setup
+
+1. Open Chrome and navigate to `chrome://extensions/`.
+2. Toggle **Developer mode** on (top-right).
+3. Click **Load unpacked** and select the `chrome-extension/` directory.
+4. Click the **PhishShield AI** icon in your browser toolbar to scan active tabs in 1-click!
+
+---
+
+## 🛡️ Security Architecture
+
+PhishShield AI incorporates enterprise-grade safety controls:
+- **Strict Input Sanitization**: Prevents Cross-Site Scripting (XSS), Server-Side Template Injection (SSTI), and XML External Entity (XXE) vectors.
+- **Safe PDF Rendering**: Sanitizes Unicode strings to avoid FPDF buffer exceptions.
+- **Zero Raw Code Exposure**: Eliminates Markdown code block leakage in user-facing HUD outputs.
+
+---
+
+## 📜 License & Disclaimers
+
+Distributed under the **MIT License**. See `LICENSE` for more information.
+
+*Disclaimer: PhishShield AI is an AI-assisted threat detection tool designed for educational and defensive analysis. Always exercise caution when handling unverified links or attachments.*
