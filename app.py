@@ -1128,6 +1128,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Google AdSense verification
+import streamlit.components.v1 as components
+components.html("""
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3382996367685285" crossorigin="anonymous"></script>
+""", height=0)
+
 # ================================
 # 7. MASSIVE CSS — FUTURISTIC 3D + IMAGE + SECURITY
 # ================================
