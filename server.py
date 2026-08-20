@@ -74,5 +74,5 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-print(f"PhishShield AI proxy on port {PORT}")
+print(f"PhishShield AI proxy - phishshield-ai-app on port {PORT}")
 HTTPServer(("0.0.0.0", PORT), ProxyHandler).serve_forever()
