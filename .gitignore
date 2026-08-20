@@ -12,6 +12,7 @@ venv.bak/
 
 # Environment variables (keep your API keys secret!)
 .env
+.streamlit/secrets.toml
 
 # Distribution / packaging
 .Python
