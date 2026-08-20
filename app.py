@@ -407,15 +407,27 @@ secure_session_cleanup()
 # ================================
 # 4. CONFIGURE AI MODEL
 # ================================
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Load API key — st.secrets for Streamlit Cloud, .env for local dev
+try:
+    _api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    _api_key = os.getenv("GEMINI_API_KEY", "")
+
+if not _api_key:
+    st.error("⚠️ API key not configured. Please add GEMINI_API_KEY to Streamlit Secrets or .env file.")
+    st.stop()
+
+client = genai.Client(api_key=_api_key)
 
 # Primary + fallback models (tried in order)
 AI_MODELS = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.5-flash']
 
 def ai_generate(model_name: str, contents) -> str:
     """Call Gemini with retry across multiple models on 503/429 errors."""
+    # Build model order: requested model first, then fallbacks
+    models_to_try = [model_name] + [m for m in AI_MODELS if m != model_name]
     last_error = None
-    for model in AI_MODELS:
+    for model in models_to_try:
         for attempt in range(3):  # 3 retries per model
             try:
                 response = client.models.generate_content(model=model, contents=contents)
@@ -431,6 +443,48 @@ def ai_generate(model_name: str, contents) -> str:
                 break
     # All models failed — raise the last error so caller can handle it
     raise last_error
+
+def normalize_verdict(result: dict) -> dict:
+    """Normalize AI output to expected format — fix verdict strings, confidence values, etc."""
+    if not isinstance(result, dict):
+        return result
+
+    # Normalize verdict
+    verdict = str(result.get('verdict', 'Error')).strip()
+    verdict_lower = verdict.lower()
+    verdict_map = {
+        'safe': 'Safe', 'clean': 'Safe', 'legitimate': 'Safe', 'benign': 'Safe',
+        'suspicious': 'Suspicious', 'suspect': 'Suspicious', 'possibly phishing': 'Suspicious',
+        'malicious': 'Malicious', 'phishing': 'Malicious', 'scam': 'Malicious',
+        'dangerous': 'Malicious', 'harmful': 'Malicious', 'threat': 'Malicious',
+    }
+    result['verdict'] = verdict_map.get(verdict_lower, verdict)
+
+    # Normalize confidence to integer 0-100
+    confidence = result.get('confidence', 0)
+    if isinstance(confidence, str):
+        conf_map = {
+            'very high': 95, 'high': 85, 'medium': 60, 'low': 30, 'very low': 15,
+            'certain': 95, 'likely': 75, 'possible': 50, 'unlikely': 25,
+        }
+        confidence = conf_map.get(confidence.lower().strip(), 50)
+    try:
+        confidence = int(confidence)
+    except (ValueError, TypeError):
+        confidence = 50
+    confidence = max(0, min(100, confidence))
+    result['confidence'] = confidence
+
+    # Ensure red_flags is a list
+    if not isinstance(result.get('red_flags'), list):
+        result['red_flags'] = []
+
+    # Ensure strings
+    for key in ['explanation', 'recommendation']:
+        if not isinstance(result.get(key), str):
+            result[key] = str(result.get(key, 'No information available.'))
+
+    return result
 
 # ================================
 # 5. ANALYSIS FUNCTIONS
@@ -490,7 +544,7 @@ Return ONLY valid JSON with these keys:
         result_text = ai_generate(AI_MODELS[0], prompt)
         result_text = re.sub(r'```json\s*', '', result_text)
         result_text = re.sub(r'```\s*', '', result_text)
-        return json.loads(result_text)
+        return normalize_verdict(json.loads(result_text))
     except Exception as e:
         return {"verdict": "Error", "confidence": 0, "explanation": secure_error_message(e), "red_flags": [], "recommendation": "Please try again."}
 
@@ -539,7 +593,7 @@ Return ONLY valid JSON with these keys:
         result_text = ai_generate(AI_MODELS[0], [prompt, image_part])
         result_text = re.sub(r'```json\s*', '', result_text)
         result_text = re.sub(r'```\s*', '', result_text)
-        return json.loads(result_text)
+        return normalize_verdict(json.loads(result_text))
     except Exception as e:
         return {"verdict": "Error", "confidence": 0, "explanation": secure_error_message(e), "red_flags": [], "recommendation": "Please try again."}
 
@@ -689,6 +743,7 @@ Return ONLY valid JSON with:
         result_text = re.sub(r'```json\s*', '', result_text)
         result_text = re.sub(r'```\s*', '', result_text)
         parsed = json.loads(result_text)
+        parsed = normalize_verdict(parsed)
         parsed['header_data'] = headers
         return parsed
     except Exception as e:
@@ -731,138 +786,6 @@ def whois_lookup(domain: str) -> dict:
         }
     except Exception as e:
         return {"domain": domain, "error": str(e)[:100]}
-
-def virustotal_lookup(target: str) -> dict:
-    """Look up URL/domain threat intelligence on VirusTotal v3 API."""
-    vt_key = os.environ.get("VIRUSTOTAL_API_KEY")
-    if not vt_key and hasattr(st, "secrets") and "VIRUSTOTAL_API_KEY" in st.secrets:
-        vt_key = st.secrets["VIRUSTOTAL_API_KEY"]
-    
-    if not vt_key:
-        return {"status": "unconfigured", "message": "API key not set"}
-
-    try:
-        clean_target = target.replace("https://", "").replace("http://", "").split("/")[0]
-        headers = {"x-apikey": vt_key}
-        url = f"https://www.virustotal.com/api/v3/domains/{clean_target}"
-        resp = requests.get(url, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            stats = data.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
-            return {
-                "status": "success",
-                "malicious": stats.get("malicious", 0),
-                "suspicious": stats.get("suspicious", 0),
-                "harmless": stats.get("harmless", 0),
-                "undetected": stats.get("undetected", 0),
-                "reputation": data.get("data", {}).get("attributes", {}).get("reputation", 0),
-                "error": None
-            }
-        else:
-            return {"status": "error", "message": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)[:100]}
-
-def inspect_ssl_cert(domain: str) -> dict:
-    """Inspect SSL Certificate details and validity for a target domain."""
-    if not domain:
-        return {"valid": False, "error": "No domain provided"}
-    clean_domain = domain.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection((clean_domain, 443), timeout=4) as sock:
-            with context.wrap_socket(sock, server_hostname=clean_domain) as ssock:
-                cert = ssock.getpeercert()
-                issuer = dict(x[0] for x in cert.get('issuer', []))
-                issuer_name = issuer.get('organizationName') or issuer.get('commonName') or "Unknown Issuer"
-                not_after = cert.get('notAfter')
-                expiry_dt = datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z') if not_after else None
-                days_left = (expiry_dt - datetime.now()).days if expiry_dt else 0
-                return {
-                    "valid": True,
-                    "issuer": issuer_name,
-                    "expires_in_days": days_left,
-                    "is_free_cert": any(fc in issuer_name.lower() for fc in ["let's encrypt", "zero-ssl", "cpanel", "cloudflare"]),
-                    "error": None
-                }
-    except Exception as e:
-        return {"valid": False, "error": str(e)[:100]}
-
-def inspect_webpage_meta(url: str) -> dict:
-    """Fetch HTTP headers and webpage title to detect brand impersonation mismatches."""
-    if not url or not url.startswith(('http://', 'https://')):
-        return {"title": "", "status_code": 0, "server": "", "impersonation_risk": False}
-    try:
-        resp = requests.get(url, timeout=4, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        title_match = re.search(r'<title>(.*?)</title>', resp.text, re.IGNORECASE | re.DOTALL)
-        page_title = title_match.group(1).strip() if title_match else ""
-        
-        brands = ["paypal", "microsoft", "apple", "netflix", "bank of america", "wellsfargo", "chase", "amazon", "google", "outlook"]
-        domain = urlparse(url).netloc.lower()
-        impersonated_brand = None
-        for b in brands:
-            if b in page_title.lower() and b not in domain:
-                impersonated_brand = b
-                break
-                
-        return {
-            "title": page_title[:100],
-            "status_code": resp.status_code,
-            "server": resp.headers.get('Server', 'Unknown')[:50],
-            "impersonated_brand": impersonated_brand,
-            "impersonation_risk": bool(impersonated_brand),
-            "error": None
-        }
-    except Exception as e:
-        return {"title": "", "status_code": 0, "server": "", "impersonated_brand": None, "impersonation_risk": False, "error": str(e)[:100]}
-
-def compute_threat_index(result: dict, whois_info: dict = None, ssl_info: dict = None, webpage_meta: dict = None, vt_info: dict = None) -> dict:
-    """Compute a multi-vector PhishShield Threat Score Index (0-100) and weighted risk breakdown."""
-    base_confidence = result.get('confidence', 50)
-    verdict = result.get('verdict', 'Safe')
-    
-    ai_score = (base_confidence * 0.9) if verdict == 'Malicious' else (base_confidence * 0.5) if verdict == 'Suspicious' else (100 - base_confidence) * 0.2
-    factors = [{"name": "AI Neural NLP Engine", "weight": "35%", "risk": "High" if ai_score > 60 else "Medium" if ai_score > 30 else "Low", "score": round(ai_score)}]
-
-    domain_score = 20
-    if whois_info and whois_info.get("is_young"):
-        domain_score = 85
-        factors.append({"name": "Domain Longevity (<90 days old)", "weight": "20%", "risk": "High", "score": 85})
-    elif whois_info and whois_info.get("age_days", 999) > 365:
-        domain_score = 10
-        factors.append({"name": "Domain Longevity (Established)", "weight": "20%", "risk": "Low", "score": 10})
-
-    ssl_score = 15
-    if ssl_info:
-        if not ssl_info.get("valid"):
-            ssl_score = 90
-            factors.append({"name": "SSL Certificate Invalid / Missing", "weight": "15%", "risk": "High", "score": 90})
-        elif ssl_info.get("is_free_cert"):
-            ssl_score = 45
-            factors.append({"name": "Free / Short-Lived SSL Certificate", "weight": "15%", "risk": "Medium", "score": 45})
-
-    meta_score = 10
-    if webpage_meta and webpage_meta.get("impersonation_risk"):
-        meta_score = 95
-        factors.append({"name": f"Brand Impersonation ({webpage_meta.get('impersonated_brand','').title()})", "weight": "15%", "risk": "Critical", "score": 95})
-
-    vt_score = 10
-    if vt_info and vt_info.get("status") == "success":
-        mal = vt_info.get("malicious", 0)
-        if mal > 0:
-            vt_score = min(100, 50 + (mal * 10))
-            factors.append({"name": f"VirusTotal Blacklisted ({mal} engines)", "weight": "15%", "risk": "Critical", "score": vt_score})
-
-    final_score = min(100, max(0, round((ai_score * 0.35) + (domain_score * 0.20) + (ssl_score * 0.15) + (meta_score * 0.15) + (vt_score * 0.15))))
-    risk_level = "CRITICAL THREAT" if final_score >= 80 else "SUSPICIOUS THREAT" if final_score >= 50 else "LOW RISK / SAFE"
-    risk_color = "#f43f5e" if final_score >= 80 else "#f59e0b" if final_score >= 50 else "#10b981"
-
-    return {
-        "threat_index": final_score,
-        "risk_level": risk_level,
-        "risk_color": risk_color,
-        "factors": factors
-    }
 
 # ================================
 # 5e. QR CODE ANALYSIS
@@ -930,101 +853,61 @@ Return a JSON array: [{{}}, {{}}, ...]"""
 # 5g. PDF EXPORT
 # ================================
 
-def clean_pdf_text(text: str) -> str:
-    """Sanitize Unicode and special characters so FPDF core fonts render cleanly without errors."""
-    if not text:
-        return ""
-    replacements = {
-        '“': '"', '”': '"', '‘': "'", '’': "'", '—': '-', '–': '-',
-        '•': '*', '…': '...', '™': '(TM)', '®': '(R)', '©': '(C)',
-        '🚨': '[!] ', '📧': '[Email] ', '🛡️': '[Shield] ', '⚠️': '[WARN] ',
-        '✅': '[OK] ', '❌': '[X] ', '🔍': '[Search] '
-    }
-    for k, v in replacements.items():
-        text = str(text).replace(k, v)
-    return text.encode('latin-1', 'replace').decode('latin-1')
-
 def generate_pdf_report(result: dict, input_text: str, input_type: str) -> bytes:
-    """Generate a PDF report of the analysis with safety fallbacks."""
-    if not PDF_AVAILABLE or not result:
+    """Generate a PDF report of the analysis."""
+    if not PDF_AVAILABLE:
         return None
-    try:
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        
-        usable_w = pdf.w - pdf.l_margin - pdf.r_margin
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.cell(0, 12, 'PhishShield AI - Threat Analysis Report', ln=True, align='C')
+    pdf.set_font('Helvetica', '', 9)
+    pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True, align='C')
+    pdf.ln(8)
 
-        # Title Header
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', 'B', 16)
-        pdf.cell(usable_w, 12, 'PhishShield AI - Threat Analysis Report', ln=True, align='C')
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', '', 9)
-        pdf.cell(usable_w, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', ln=True, align='C')
-        pdf.ln(6)
+    # Verdict
+    verdict = result.get('verdict', 'Unknown')
+    confidence = result.get('confidence', 0)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 10, f'Verdict: {verdict.upper()} (Confidence: {confidence}%)', ln=True)
+    pdf.ln(4)
 
-        # Verdict
-        verdict = clean_pdf_text(result.get('verdict', 'Unknown'))
-        confidence = result.get('confidence', 0)
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', 'B', 14)
-        pdf.cell(usable_w, 10, clean_pdf_text(f'Verdict: {verdict.upper()} (Confidence: {confidence}%)'), ln=True)
-        pdf.ln(4)
+    # Explanation
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Explanation:', ln=True)
+    pdf.set_font('Helvetica', '', 10)
+    pdf.multi_cell(0, 6, result.get('explanation', 'N/A'))
+    pdf.ln(4)
 
-        # Explanation
-        pdf.set_x(pdf.l_margin)
+    # Red Flags
+    flags = result.get('red_flags', [])
+    if flags:
         pdf.set_font('Helvetica', 'B', 11)
-        pdf.cell(usable_w, 8, 'Explanation:', ln=True)
-        pdf.set_x(pdf.l_margin)
+        pdf.cell(0, 8, 'Red Flags Detected:', ln=True)
         pdf.set_font('Helvetica', '', 10)
-        explanation_txt = clean_pdf_text(result.get('explanation', 'N/A'))
-        pdf.multi_cell(usable_w, 6, explanation_txt)
+        for i, f in enumerate(flags):
+            pdf.multi_cell(0, 6, f'  {i+1}. {f}')
         pdf.ln(4)
 
-        # Red Flags
-        flags = result.get('red_flags', [])
-        if flags:
-            pdf.set_x(pdf.l_margin)
-            pdf.set_font('Helvetica', 'B', 11)
-            pdf.cell(usable_w, 8, 'Red Flags Detected:', ln=True)
-            pdf.set_font('Helvetica', '', 10)
-            for i, f in enumerate(flags):
-                pdf.set_x(pdf.l_margin)
-                flag_txt = clean_pdf_text(f'  {i+1}. {f}')
-                pdf.multi_cell(usable_w, 6, flag_txt)
-            pdf.ln(4)
+    # Recommendation
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, 'Recommendation:', ln=True)
+    pdf.set_font('Helvetica', '', 10)
+    pdf.multi_cell(0, 6, result.get('recommendation', 'N/A'))
+    pdf.ln(4)
 
-        # Recommendation
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', 'B', 11)
-        pdf.cell(usable_w, 8, 'Recommendation:', ln=True)
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', '', 10)
-        rec_txt = clean_pdf_text(result.get('recommendation', 'N/A'))
-        pdf.multi_cell(usable_w, 6, rec_txt)
-        pdf.ln(4)
+    # Input
+    pdf.set_font('Helvetica', 'B', 11)
+    pdf.cell(0, 8, f'Analyzed Content ({input_type.upper()}):', ln=True)
+    pdf.set_font('Helvetica', '', 8)
+    pdf.multi_cell(0, 5, input_text[:2000] if input_text else 'Image upload')
 
-        # Input Content
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', 'B', 11)
-        pdf.cell(usable_w, 8, clean_pdf_text(f'Analyzed Content ({input_type.upper()}):'), ln=True)
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', '', 8)
-        content_preview = clean_pdf_text(input_text[:2000] if input_text else 'Image / Binary Upload')
-        pdf.multi_cell(usable_w, 5, content_preview)
+    # Footer
+    pdf.ln(10)
+    pdf.set_font('Helvetica', 'I', 8)
+    pdf.cell(0, 6, 'PhishShield AI | Powered by Google Gemini | For educational purposes', ln=True, align='C')
 
-        # Footer
-        pdf.ln(8)
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font('Helvetica', 'I', 8)
-        pdf.cell(usable_w, 6, 'PhishShield AI | Powered by Google Gemini | For educational purposes', ln=True, align='C')
-
-        return bytes(pdf.output())
-    except Exception as e:
-        # Log error quietly and return None so app never crashes
-        print(f"PDF Generation error caught safely: {e}")
-        return None
+    return bytes(pdf.output())
 
 # ================================
 # 5h. MULTILINGUAL SUPPORT
@@ -1095,489 +978,205 @@ st.set_page_config(
 # ================================
 
 st.markdown("""
-
-
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap');
 
-/* ========================================
-COSMIC PURPLE — DARK MODE (DEFAULT)
-Deep space, violet neon, cyberpunk gloom
-======================================== */
-:root {
---bg-base:   #060212;
---bg-deep:   #0a0420;
---bg-panel:  #0f0628;
---bg-card:   #140930;
---bg-input:  #07021a;
---accent:    #a855f7;
---accent2:   #7c3aed;
---hot:       #ec4899;
---cyan:      #06b6d4;
---green:     #10b981;
---amber:     #f59e0b;
---red:       #f43f5e;
---fg:        #f1f5f9;
---fg2:       #d8b4fe;
---fg3:       #9f7aea;
---border:    rgba(168,85,247,0.35);
---border2:   rgba(168,85,247,0.6);
---shadow:    0 8px 32px rgba(0,0,0,0.75);
---glow-sm:   0 0 14px rgba(168,85,247,0.4);
---glow-md:   0 0 28px rgba(168,85,247,0.55);
-}
-
-/* ===== NUCLEAR BACKGROUND RESET ===== */
-html, body,
-.stApp,
-[data-testid="stAppViewContainer"],
-[data-testid="stAppViewBlockContainer"],
-[data-testid="stMain"],
-[data-testid="stMainBlockContainer"],
-[data-testid="stVerticalBlock"],
-[data-testid="stVerticalBlockBorderWrapper"],
-[data-testid="stHorizontalBlock"],
-[data-testid="stColumn"],
-[data-testid="column"],
-[data-testid="stHeader"],
-[data-testid="stDecoration"],
-[data-testid="stBottom"],
-[data-testid="stSidebarContent"],
-section[data-testid="stSidebar"],
-div.block-container, div.main,
-.stTabs, [data-testid="stTabs"],
-[data-testid="stTabsTabPanel"],
-div[role="tabpanel"],
-[data-testid="stForm"],
-.element-container,
-[data-testid="stMarkdownContainer"] {
-background-color: var(--bg-base) !important;
-background: var(--bg-base) !important;
-color: var(--fg) !important;
-}
-
-/* ===== APP SHELL ===== */
-.stApp {
-font-family: 'Rajdhani', sans-serif !important;
-min-height: 100vh;
-}
-
-/* Deep space nebula gradient */
+/* ===== GLOBAL RESETS ===== */
+.stApp { background: #050510 !important; font-family: 'Rajdhani', sans-serif !important; }
 .stApp::before {
-content: '';
-position: fixed; inset: 0;
-background:
-radial-gradient(ellipse 90% 55% at 50% -5%, rgba(139,92,246,0.38) 0%, transparent 60%),
-radial-gradient(circle at 8%  50%, rgba(236,72,153,0.18) 0%, transparent 40%),
-radial-gradient(circle at 92% 72%, rgba(99,102,241,0.22) 0%, transparent 45%),
-radial-gradient(ellipse at 50% 115%, rgba(168,85,247,0.22) 0%, transparent 55%);
-z-index: 0; pointer-events: none;
-animation: nebulaPulse 12s ease-in-out infinite alternate;
+    content: ''; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at 20% 50%, rgba(0,255,200,0.03) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(0,180,255,0.04) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(120,0,255,0.03) 0%, transparent 50%);
+    z-index: -1; pointer-events: none;
 }
-@keyframes nebulaPulse { 0%{opacity:0.75} 100%{opacity:1.0} }
-
-/* Purple hex grid */
 .stApp::after {
-content: '';
-position: fixed; inset: 0;
-background-image:
-linear-gradient(rgba(168,85,247,0.055) 1px, transparent 1px),
-linear-gradient(90deg, rgba(168,85,247,0.055) 1px, transparent 1px);
-background-size: 50px 50px;
-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.65) 0%, transparent 78%);
--webkit-mask-image: radial-gradient(ellipse at center, rgba(0,0,0,0.65) 0%, transparent 78%);
-z-index: 0; pointer-events: none;
-animation: gridDrift 15s ease-in-out infinite alternate;
+    content: ''; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background-image: linear-gradient(rgba(0,255,200,0.03) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(0,255,200,0.03) 1px, transparent 1px);
+    background-size: 60px 60px; animation: gridMove 20s linear infinite;
+    z-index: -1; pointer-events: none;
 }
-@keyframes gridDrift { 0%{background-position:0 0;opacity:0.45} 100%{background-position:14px 14px;opacity:0.85} }
+@keyframes gridMove { 0%{transform:perspective(500px) rotateX(0deg)} 100%{transform:perspective(500px) rotateX(0deg) translateY(60px)} }
 
 /* ===== PARTICLES ===== */
-.particles { position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden; }
-.particle {
-position:absolute; width:3px; height:3px;
-background: var(--accent); border-radius:50%;
-box-shadow: 0 0 8px var(--accent), 0 0 16px var(--accent2);
-animation: floatUp linear infinite;
-}
-.particle:nth-child(1)  { left:7%;  animation-duration:11s; animation-delay:0s;   }
-.particle:nth-child(2)  { left:18%; animation-duration:14s; animation-delay:2.5s; background:var(--hot); box-shadow:0 0 8px var(--hot); }
-.particle:nth-child(3)  { left:30%; animation-duration:9s;  animation-delay:4s;   }
-.particle:nth-child(4)  { left:45%; animation-duration:16s; animation-delay:1s;   background:var(--cyan); box-shadow:0 0 8px var(--cyan); }
-.particle:nth-child(5)  { left:60%; animation-duration:13s; animation-delay:3s;   }
-.particle:nth-child(6)  { left:74%; animation-duration:10s; animation-delay:5.5s; background:var(--hot); box-shadow:0 0 8px var(--hot); }
-.particle:nth-child(7)  { left:87%; animation-duration:15s; animation-delay:1.5s; }
-.particle:nth-child(8)  { left:52%; animation-duration:12s; animation-delay:0.5s; background:var(--accent2); box-shadow:0 0 8px var(--accent2); }
-.particle:nth-child(9)  { left:25%; animation-duration:17s; animation-delay:3.5s; }
-.particle:nth-child(10) { left:68%; animation-duration:19s; animation-delay:2s;   background:var(--cyan); box-shadow:0 0 8px var(--cyan); }
-@keyframes floatUp {
-0%   { transform:translateY(104vh) scale(0.2); opacity:0; }
-12%  { opacity:0.9; }
-88%  { opacity:0.9; }
-100% { transform:translateY(-8vh) scale(1.5); opacity:0; }
-}
+.particles { position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; pointer-events:none; overflow:hidden; }
+.particle { position:absolute; width:3px; height:3px; background:rgba(0,255,200,0.6); border-radius:50%; animation:floatUp linear infinite; box-shadow:0 0 6px rgba(0,255,200,0.4); }
+.particle:nth-child(1){left:5%;animation-duration:12s;animation-delay:0s}
+.particle:nth-child(2){left:15%;animation-duration:15s;animation-delay:2s;background:rgba(0,180,255,0.6)}
+.particle:nth-child(3){left:25%;animation-duration:10s;animation-delay:4s}
+.particle:nth-child(4){left:40%;animation-duration:18s;animation-delay:1s;background:rgba(120,0,255,0.6)}
+.particle:nth-child(5){left:55%;animation-duration:14s;animation-delay:3s}
+.particle:nth-child(6){left:70%;animation-duration:11s;animation-delay:5s;background:rgba(0,255,200,0.6)}
+.particle:nth-child(7){left:85%;animation-duration:16s;animation-delay:0.5s;background:rgba(0,180,255,0.6)}
+.particle:nth-child(8){left:92%;animation-duration:13s;animation-delay:2.5s}
+.particle:nth-child(9){left:33%;animation-duration:17s;animation-delay:4.5s;background:rgba(120,0,255,0.5)}
+.particle:nth-child(10){left:62%;animation-duration:19s;animation-delay:1.5s}
+@keyframes floatUp { 0%{transform:translateY(100vh) scale(0);opacity:0} 10%{opacity:1} 90%{opacity:1} 100%{transform:translateY(-10vh) scale(1.5);opacity:0} }
 
-/* ===== HERO ZONE ===== */
-.hero-zone { text-align:center; padding:40px 20px 24px; position:relative; z-index:1; }
-.shield-3d {
-font-size:6rem; display:inline-block;
-animation: shieldFloat 4s ease-in-out infinite, shieldGlow 2.5s ease-in-out infinite alternate;
-filter: drop-shadow(0 0 30px rgba(168,85,247,0.65));
-}
-.shield-3d::after {
-content:''; position:absolute; bottom:-16px; left:50%;
-transform:translateX(-50%); width:90px; height:13px;
-background:radial-gradient(ellipse,rgba(168,85,247,0.45),transparent 70%);
-border-radius:50%; animation:shadowPulse 4s ease-in-out infinite;
-}
-@keyframes shieldFloat {
-0%,100% { transform:translateY(0) rotateX(0deg) rotateY(0deg); }
-25% { transform:translateY(-13px) rotateX(7deg) rotateY(-7deg); }
-50% { transform:translateY(-6px) rotateX(0deg) rotateY(5deg); }
-75% { transform:translateY(-15px) rotateX(-5deg) rotateY(7deg); }
-}
-@keyframes shieldGlow {
-0%   { filter:drop-shadow(0 0 22px rgba(168,85,247,0.5)) drop-shadow(0 0 40px rgba(124,58,237,0.3)); }
-100% { filter:drop-shadow(0 0 48px rgba(168,85,247,0.9)) drop-shadow(0 0 75px rgba(236,72,153,0.5)); }
-}
-@keyframes shadowPulse {
-0%,100% { transform:translateX(-50%) scale(1); opacity:0.4; }
-50%     { transform:translateX(-50%) scale(0.6); opacity:0.15; }
-}
+/* ===== HERO ===== */
+.hero-zone { text-align:center; padding:50px 20px 30px; position:relative; }
+.shield-3d { font-size:6rem; display:inline-block; animation: shieldFloat 3s ease-in-out infinite, shieldGlow 2s ease-in-out infinite alternate; filter: drop-shadow(0 0 30px rgba(0,255,200,0.5)); position:relative; }
+.shield-3d::after { content:''; position:absolute; bottom:-15px; left:50%; transform:translateX(-50%); width:80px; height:12px; background:radial-gradient(ellipse,rgba(0,255,200,0.3),transparent); border-radius:50%; animation:shieldShadow 3s ease-in-out infinite; }
+@keyframes shieldFloat { 0%,100%{transform:translateY(0) perspective(500px) rotateY(0deg)} 25%{transform:translateY(-12px) perspective(500px) rotateY(5deg)} 50%{transform:translateY(-8px) perspective(500px) rotateY(0deg)} 75%{transform:translateY(-15px) perspective(500px) rotateY(-5deg)} }
+@keyframes shieldGlow { 0%{filter:drop-shadow(0 0 20px rgba(0,255,200,0.3))} 100%{filter:drop-shadow(0 0 40px rgba(0,255,200,0.7))} }
+@keyframes shieldShadow { 0%,100%{transform:translateX(-50%) scale(1);opacity:0.3} 50%{transform:translateX(-50%) scale(0.7);opacity:0.15} }
 
-.main-title {
-font-family:'Orbitron',sans-serif;
-font-size:3.6rem; font-weight:900; letter-spacing:7px; margin:14px 0 5px;
-background:linear-gradient(135deg, #f3e8ff 0%, #d8b4fe 22%, #c084fc 48%, #ec4899 75%, #a855f7 100%);
-background-size:300% 300%;
--webkit-background-clip:text; -webkit-text-fill-color:transparent;
-animation:titleShine 5s ease infinite;
-}
-@keyframes titleShine {
-0%  { background-position:0% 50%; }
-50% { background-position:100% 50%; }
-100%{ background-position:0% 50%; }
-}
-.main-subtitle {
-font-family:'Share Tech Mono','Courier New',monospace;
-font-size:1rem; color:var(--fg2); letter-spacing:4px; text-transform:uppercase;
-margin-bottom:8px; opacity:0.9;
-}
-.status-line {
-font-family:'Share Tech Mono','Courier New',monospace;
-font-size:0.85rem; color:var(--fg2); letter-spacing:2px;
-display:inline-flex; align-items:center; gap:12px;
-background: var(--bg-deep);
-border:1px solid var(--border);
-border-radius:30px; padding:6px 20px; white-space:nowrap;
-box-shadow: var(--glow-sm);
-}
-.status-line .online { color:var(--green); animation:blink 1.5s ease-in-out infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.35} }
+.main-title { font-family:'Orbitron',sans-serif; font-size:4rem; font-weight:900; letter-spacing:8px; margin:15px 0 5px; background:linear-gradient(135deg,#00ffc8 0%,#00b4ff 30%,#7b2fff 60%,#00ffc8 100%); background-size:300% 300%; -webkit-background-clip:text; -webkit-text-fill-color:transparent; animation:titleGradient 4s ease infinite; }
+@keyframes titleGradient { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+
+.main-subtitle { font-family:'Share Tech Mono',monospace; font-size:1rem; color:rgba(0,255,200,0.5); letter-spacing:4px; text-transform:uppercase; margin-bottom:5px; }
+.status-line { font-family:'Share Tech Mono',monospace; font-size:0.85rem; color:rgba(0,255,200,0.35); letter-spacing:2px; }
+.status-line .online { color:#00ffc8; animation:blink 1.5s ease-in-out infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
 /* ===== HOLO DIVIDER ===== */
-.holo-divider {
-height:2px; margin:22px 0;
-background:linear-gradient(90deg,transparent,rgba(168,85,247,0.25),#a855f7,#ec4899,#8b5cf6,rgba(168,85,247,0.25),transparent);
-position:relative;
-}
-.holo-divider::after {
-content:''; position:absolute; top:50%; left:50%;
-width:13px; height:13px; background:#c084fc; border-radius:3px;
-transform:translate(-50%,-50%) rotate(45deg);
-box-shadow:0 0 14px #a855f7, 0 0 28px #ec4899;
-animation:diamondRotate 4s linear infinite;
-}
-@keyframes diamondRotate {
-0%   { transform:translate(-50%,-50%) rotate(45deg); }
-50%  { transform:translate(-50%,-50%) rotate(225deg) scale(1.12); }
-100% { transform:translate(-50%,-50%) rotate(405deg); }
-}
+.holo-divider { height:1px; margin:25px 0; background:linear-gradient(90deg,transparent,#00ffc8,#00b4ff,#7b2fff,#00b4ff,#00ffc8,transparent); position:relative; }
+.holo-divider::before { content:''; position:absolute; top:-3px; left:0; right:0; height:7px; background:linear-gradient(90deg,transparent,rgba(0,255,200,0.2),transparent); filter:blur(4px); }
+.holo-divider::after { content:''; position:absolute; top:50%; left:50%; width:12px; height:12px; background:#00ffc8; border-radius:2px; transform:translate(-50%,-50%) rotate(45deg); box-shadow:0 0 15px rgba(0,255,200,0.5); animation:diamondPulse 2s ease-in-out infinite; }
+@keyframes diamondPulse { 0%,100%{box-shadow:0 0 15px rgba(0,255,200,0.5)} 50%{box-shadow:0 0 25px rgba(0,255,200,0.8)} }
 
 /* ===== GLASS PANEL ===== */
-.glass-panel {
-background: var(--bg-panel);
-border:1px solid var(--border); border-radius:20px; padding:24px;
-position:relative; overflow:hidden;
-box-shadow: var(--shadow), inset 0 1px 0 rgba(168,85,247,0.1), var(--glow-sm);
-transition:all 0.3s ease; z-index:1;
-}
-.glass-panel::before {
-content:''; position:absolute; top:0; left:0; right:0; height:1px;
-background:linear-gradient(90deg,transparent,rgba(168,85,247,0.65),rgba(236,72,153,0.4),transparent);
-}
-.glass-panel:hover {
-border-color:var(--border2);
-box-shadow:var(--shadow),var(--glow-md);
-transform:translateY(-2px);
-}
-.glass-panel *, .glass-panel p, .glass-panel span, .glass-panel div { color:var(--fg); }
+.glass-panel { background:linear-gradient(135deg,rgba(10,15,30,0.85),rgba(5,10,25,0.9)); border:1px solid rgba(0,255,200,0.15); border-radius:20px; padding:30px; position:relative; overflow:hidden; backdrop-filter:blur(20px); box-shadow:0 8px 32px rgba(0,0,0,0.4),inset 0 1px 0 rgba(255,255,255,0.05),0 0 60px rgba(0,255,200,0.03); }
+.glass-panel::before { content:''; position:absolute; top:0; left:-100%; width:100%; height:100%; background:linear-gradient(90deg,transparent,rgba(0,255,200,0.03),transparent); animation:scanLine 6s linear infinite; }
+@keyframes scanLine { 0%{left:-100%} 100%{left:100%} }
 
 .corner-decor { position:relative; }
-.corner-decor::before,.corner-decor::after {
-content:''; position:absolute; width:16px; height:16px;
-border-color:var(--accent); border-style:solid; pointer-events:none;
-}
+.corner-decor::before,.corner-decor::after { content:''; position:absolute; width:20px; height:20px; border-color:rgba(0,255,200,0.4); border-style:solid; }
 .corner-decor::before { top:8px; left:8px; border-width:2px 0 0 2px; }
-.corner-decor::after  { bottom:8px; right:8px; border-width:0 2px 2px 0; }
+.corner-decor::after { bottom:8px; right:8px; border-width:0 2px 2px 0; }
 
 /* ===== SECTION TITLES ===== */
-.section-title {
-font-family:'Orbitron',sans-serif; font-size:1rem; font-weight:700;
-color:var(--fg2); letter-spacing:3px; text-transform:uppercase;
-margin-bottom:16px; display:flex; align-items:center; gap:10px;
-}
-.section-title .dot {
-width:8px; height:8px; background:var(--accent);
-border-radius:2px; transform:rotate(45deg); box-shadow:var(--glow-sm);
-}
-.section-title .line { flex:1; height:1px; background:linear-gradient(90deg,rgba(168,85,247,0.4),transparent); }
+.section-title { font-family:'Orbitron',sans-serif; font-size:1.1rem; font-weight:700; color:#00ffc8; letter-spacing:3px; text-transform:uppercase; margin-bottom:20px; display:flex; align-items:center; gap:12px; }
+.section-title .dot { width:8px; height:8px; background:#00ffc8; border-radius:2px; transform:rotate(45deg); box-shadow:0 0 10px rgba(0,255,200,0.5); }
+.section-title .line { flex:1; height:1px; background:linear-gradient(90deg,rgba(0,255,200,0.3),transparent); }
 
 /* ===== TEXTAREA ===== */
-.stTextArea, .stTextArea > div, .stTextArea > div > div, .stTextArea > label { background:transparent !important; }
-.stTextArea textarea, textarea {
-background:var(--bg-input) !important; background-color:var(--bg-input) !important;
-border:1px solid var(--border) !important; border-radius:14px !important;
-color:#e9d5ff !important; font-family:'Share Tech Mono','Courier New',monospace !important;
-font-size:0.95rem !important; padding:16px !important;
-box-shadow:inset 0 2px 10px rgba(0,0,0,0.65) !important;
-transition:all 0.3s ease !important; caret-color:var(--accent) !important;
-}
-.stTextArea textarea:focus, textarea:focus {
-border-color:var(--accent) !important;
-box-shadow:var(--glow-sm), inset 0 2px 10px rgba(0,0,0,0.65) !important;
-outline:none !important;
-}
-.stTextArea textarea::placeholder, textarea::placeholder {
-color:rgba(192,132,252,0.45) !important; font-style:italic !important;
-}
+.stTextArea textarea { background:rgba(5,10,25,0.9) !important; border:1px solid rgba(0,255,200,0.2) !important; border-radius:14px !important; color:#c8ffe8 !important; font-family:'Share Tech Mono',monospace !important; font-size:0.95rem !important; padding:18px !important; transition:all 0.4s cubic-bezier(.25,.46,.45,.94) !important; box-shadow:inset 0 2px 10px rgba(0,0,0,0.3) !important; }
+.stTextArea textarea:focus { border-color:#00ffc8 !important; box-shadow:inset 0 2px 10px rgba(0,0,0,0.3),0 0 20px rgba(0,255,200,0.15),0 0 40px rgba(0,255,200,0.05) !important; }
+.stTextArea textarea::placeholder { color:rgba(0,255,200,0.25) !important; font-style:italic; }
 
 /* ===== BUTTONS ===== */
-.stButton > button {
-background:linear-gradient(135deg,rgba(124,58,237,0.25),rgba(236,72,153,0.15)) !important;
-border:1px solid var(--border) !important; border-radius:12px !important;
-padding:12px 24px !important; font-family:'Orbitron',sans-serif !important;
-font-weight:700 !important; font-size:0.85rem !important; color:#e9d5ff !important;
-letter-spacing:2px !important; text-transform:uppercase !important;
-transition:all 0.3s cubic-bezier(0.25,0.46,0.45,0.94) !important;
-position:relative !important; overflow:hidden !important;
-box-shadow:0 4px 14px rgba(0,0,0,0.4), var(--glow-sm) !important;
-}
-.stButton > button:hover {
-transform:translateY(-3px) scale(1.02) !important;
-border-color:var(--accent) !important; color:#fff !important;
-background:linear-gradient(135deg,rgba(168,85,247,0.4),rgba(236,72,153,0.3)) !important;
-box-shadow:0 10px 28px rgba(0,0,0,0.4), var(--glow-md) !important;
-}
-.stButton > button[kind="primary"] {
-background:linear-gradient(135deg,#7c3aed 0%,#a855f7 45%,#ec4899 100%) !important;
-border:1px solid rgba(255,255,255,0.2) !important; color:#fff !important;
-font-size:1.05rem !important; font-weight:800 !important;
-padding:16px 36px !important; letter-spacing:3px !important;
-box-shadow:0 8px 28px rgba(124,58,237,0.5), 0 0 45px rgba(236,72,153,0.25) !important;
-}
-.stButton > button[kind="primary"]:hover {
-transform:translateY(-4px) scale(1.02) !important;
-box-shadow:0 14px 42px rgba(168,85,247,0.7), 0 0 65px rgba(236,72,153,0.4) !important;
-}
+.stButton > button { background:linear-gradient(135deg,rgba(0,255,200,0.15),rgba(0,180,255,0.1)) !important; border:1px solid rgba(0,255,200,0.3) !important; border-radius:12px !important; padding:14px 28px !important; font-family:'Orbitron',sans-serif !important; font-weight:600 !important; font-size:0.85rem !important; color:#00ffc8 !important; letter-spacing:2px !important; text-transform:uppercase !important; transition:all 0.4s cubic-bezier(.25,.46,.45,.94) !important; position:relative !important; overflow:hidden !important; box-shadow:0 4px 15px rgba(0,255,200,0.1) !important; }
+.stButton > button::before { content:'' !important; position:absolute !important; top:0 !important; left:-100% !important; width:100% !important; height:100% !important; background:linear-gradient(90deg,transparent,rgba(0,255,200,0.1),transparent) !important; transition:left 0.5s !important; }
+.stButton > button:hover::before { left:100% !important; }
+.stButton > button:hover { transform:translateY(-3px) !important; border-color:#00ffc8 !important; box-shadow:0 8px 25px rgba(0,255,200,0.2),0 0 40px rgba(0,255,200,0.08) !important; background:linear-gradient(135deg,rgba(0,255,200,0.25),rgba(0,180,255,0.15)) !important; }
+.stButton > button:active { transform:translateY(-1px) !important; }
+.stButton > button[kind="primary"] { background:linear-gradient(135deg,#00ffc8,#00b4ff) !important; border:none !important; color:#050510 !important; font-size:1rem !important; padding:18px 40px !important; font-weight:800 !important; box-shadow:0 5px 25px rgba(0,255,200,0.3),0 0 50px rgba(0,255,200,0.1) !important; }
+.stButton > button[kind="primary"]:hover { box-shadow:0 8px 35px rgba(0,255,200,0.4),0 0 60px rgba(0,255,200,0.15) !important; transform:translateY(-3px) !important; }
 
-/* ===== RESULT PANELS ===== */
-.verdict-safe {
-background:linear-gradient(135deg,rgba(16,185,129,0.14) 0%,var(--bg-panel) 100%);
-border:1px solid rgba(16,185,129,0.42);
-box-shadow:0 14px 42px rgba(0,0,0,0.6), 0 0 38px rgba(16,185,129,0.18);
-border-radius:20px; padding:28px; margin:18px 0; animation:resultReveal 0.6s ease;
-}
-.verdict-suspicious {
-background:linear-gradient(135deg,rgba(245,158,11,0.14) 0%,var(--bg-panel) 100%);
-border:1px solid rgba(245,158,11,0.48);
-box-shadow:0 14px 42px rgba(0,0,0,0.6), 0 0 38px rgba(245,158,11,0.18);
-border-radius:20px; padding:28px; margin:18px 0; animation:resultReveal 0.6s ease;
-}
-.verdict-malicious {
-background:linear-gradient(135deg,rgba(244,63,94,0.18) 0%,var(--bg-panel) 100%);
-border:1px solid rgba(244,63,94,0.58);
-box-shadow:0 14px 48px rgba(0,0,0,0.65), 0 0 52px rgba(244,63,94,0.22);
-border-radius:20px; padding:28px; margin:18px 0;
-animation:resultReveal 0.6s ease, maliciousGlow 3s ease-in-out infinite;
-}
-@keyframes resultReveal { from{opacity:0;transform:translateY(30px) scale(0.96)} to{opacity:1;transform:none} }
-@keyframes maliciousGlow {
-0%,100% { border-color:rgba(244,63,94,0.5); box-shadow:0 0 40px rgba(244,63,94,0.2); }
-50%     { border-color:rgba(244,63,94,0.9); box-shadow:0 0 68px rgba(244,63,94,0.45); }
-}
-.result-3d { border-radius:20px; padding:28px; margin:18px 0; animation:resultReveal 0.6s ease; }
-.result-safe { background:linear-gradient(135deg,rgba(16,185,129,0.14) 0%,var(--bg-panel) 100%); border:1px solid rgba(16,185,129,0.42); box-shadow:0 14px 42px rgba(0,0,0,0.6); }
-.result-suspicious { background:linear-gradient(135deg,rgba(245,158,11,0.14) 0%,var(--bg-panel) 100%); border:1px solid rgba(245,158,11,0.48); }
-.result-malicious { background:linear-gradient(135deg,rgba(244,63,94,0.18) 0%,var(--bg-panel) 100%); border:1px solid rgba(244,63,94,0.58); animation:resultReveal 0.6s ease, maliciousGlow 3s ease-in-out infinite; }
-.result-error { background:linear-gradient(135deg,rgba(100,100,120,0.12) 0%,var(--bg-panel) 100%); border:1px solid rgba(140,140,160,0.3); }
-.verdict-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
-.verdict-label { font-family:'Orbitron',sans-serif; font-size:0.85rem; font-weight:700; letter-spacing:4px; text-transform:uppercase; color:var(--fg2); }
-.verdict-text { font-family:'Orbitron',sans-serif; font-size:2.8rem; font-weight:900; letter-spacing:3px; margin-bottom:18px; }
-.result-safe .verdict-text, .verdict-safe .verdict-text   { color:#10b981; text-shadow:0 0 28px rgba(16,185,129,0.6); }
-.result-suspicious .verdict-text, .verdict-suspicious .verdict-text { color:#f59e0b; text-shadow:0 0 28px rgba(245,158,11,0.6); }
-.result-malicious .verdict-text, .verdict-malicious .verdict-text  { color:#f43f5e; text-shadow:0 0 32px rgba(244,63,94,0.7); }
-.result-error .verdict-text { color:#94a3b8; }
+/* ===== FILE UPLOADER ===== */
+.stFileUploader { background:rgba(5,10,25,0.7) !important; border:2px dashed rgba(0,255,200,0.25) !important; border-radius:16px !important; padding:20px !important; transition:all 0.3s ease !important; }
+.stFileUploader:hover { border-color:rgba(0,255,200,0.5) !important; box-shadow:0 0 30px rgba(0,255,200,0.08) !important; }
+.stFileUploader [data-testid="stFileUploadDropzone"] { background:rgba(0,255,200,0.03) !important; border:1px solid rgba(0,255,200,0.15) !important; border-radius:12px !important; }
+.stFileUploader label { color:rgba(0,255,200,0.7) !important; font-family:'Orbitron',sans-serif !important; font-size:0.8rem !important; letter-spacing:2px !important; }
 
-/* ===== CONFIDENCE BAR ===== */
-.confidence-wrap { margin:18px 0; }
-.conf-header { display:flex; justify-content:space-between; font-family:'Share Tech Mono',monospace; font-size:0.85rem; color:var(--fg2); letter-spacing:2px; margin-bottom:8px; }
-.conf-track { height:10px; background:rgba(255,255,255,0.06); border-radius:6px; overflow:hidden; }
-.conf-fill { height:100%; border-radius:6px; position:relative; transition:width 1.5s cubic-bezier(0.25,0.46,0.45,0.94); }
-.conf-fill::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,0.4),transparent); animation:barShimmer 2s ease-in-out infinite; }
+/* ===== IMAGE PREVIEW ===== */
+.image-preview-box { background:rgba(5,10,25,0.8); border:1px solid rgba(0,255,200,0.2); border-radius:14px; padding:15px; margin-top:15px; text-align:center; position:relative; overflow:hidden; }
+.image-preview-box::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,#00ffc8,transparent); }
+.image-preview-label { font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:rgba(0,255,200,0.4); letter-spacing:2px; text-transform:uppercase; margin-bottom:10px; }
+
+/* ===== MODE TABS ===== */
+.mode-tabs { display:flex; gap:12px; justify-content:center; margin:20px 0; }
+.mode-tab { font-family:'Orbitron',sans-serif; font-size:0.9rem; font-weight:600; letter-spacing:2px; padding:12px 30px; border:1px solid rgba(0,255,200,0.2); border-radius:12px; background:rgba(10,15,30,0.8); color:rgba(0,255,200,0.5); cursor:pointer; transition:all 0.3s ease; text-transform:uppercase; }
+.mode-tab.active { background:linear-gradient(135deg,rgba(0,255,200,0.15),rgba(0,180,255,0.1)); border-color:#00ffc8; color:#00ffc8; box-shadow:0 0 20px rgba(0,255,200,0.15); }
+.mode-tab:hover { border-color:rgba(0,255,200,0.4); color:rgba(0,255,200,0.8); }
+
+/* ===== RESULTS ===== */
+.result-3d { border-radius:20px; padding:30px; margin:20px 0; position:relative; overflow:hidden; animation:resultReveal 0.7s cubic-bezier(.25,.46,.45,.94); }
+@keyframes resultReveal { from{opacity:0;transform:translateY(40px) scale(0.96)} to{opacity:1;transform:translateY(0) scale(1)} }
+.result-3d::before { content:''; position:absolute; top:0;left:0;right:0;bottom:0; border-radius:20px; padding:1px; background:linear-gradient(135deg,var(--glow-color),transparent 60%); -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0); -webkit-mask-composite:xor; mask-composite:exclude; pointer-events:none; }
+.result-safe { --glow-color:#00ffc8; background:linear-gradient(135deg,rgba(0,255,200,0.06),rgba(0,200,160,0.03)); box-shadow:0 10px 50px rgba(0,255,200,0.1),inset 0 0 80px rgba(0,255,200,0.02); }
+.result-suspicious { --glow-color:#ffc107; background:linear-gradient(135deg,rgba(255,193,7,0.06),rgba(255,150,0,0.03)); box-shadow:0 10px 50px rgba(255,193,7,0.1),inset 0 0 80px rgba(255,193,7,0.02); }
+.result-malicious { --glow-color:#ff3355; background:linear-gradient(135deg,rgba(255,51,85,0.06),rgba(220,30,60,0.03)); box-shadow:0 10px 50px rgba(255,51,85,0.1),inset 0 0 80px rgba(255,51,85,0.02); animation:resultReveal 0.7s cubic-bezier(.25,.46,.45,.94),dangerPulse 3s ease-in-out infinite; }
+.result-error { --glow-color:#667; background:linear-gradient(135deg,rgba(100,100,120,0.06),rgba(80,80,100,0.03)); box-shadow:0 10px 50px rgba(100,100,120,0.1); }
+@keyframes dangerPulse { 0%,100%{box-shadow:0 10px 50px rgba(255,51,85,0.1)} 50%{box-shadow:0 10px 70px rgba(255,51,85,0.2)} }
+
+.verdict-label { font-family:'Orbitron',sans-serif; font-size:0.85rem; font-weight:600; letter-spacing:4px; text-transform:uppercase; opacity:0.6; margin-bottom:8px; }
+.verdict-text { font-family:'Orbitron',sans-serif; font-size:2.5rem; font-weight:900; letter-spacing:3px; margin-bottom:20px; }
+.verdict-safe .verdict-text { color:#00ffc8; text-shadow:0 0 30px rgba(0,255,200,0.4); }
+.verdict-suspicious .verdict-text { color:#ffc107; text-shadow:0 0 30px rgba(255,193,7,0.4); }
+.verdict-malicious .verdict-text { color:#ff3355; text-shadow:0 0 30px rgba(255,51,85,0.4); }
+.verdict-error .verdict-text { color:#888; }
+
+.confidence-wrap { margin:15px 0; }
+.conf-label { font-family:'Share Tech Mono',monospace; font-size:0.8rem; color:rgba(0,255,200,0.5); letter-spacing:2px; text-transform:uppercase; margin-bottom:8px; }
+.conf-track { height:8px; background:rgba(255,255,255,0.05); border-radius:4px; overflow:hidden; }
+.conf-fill { height:100%; border-radius:4px; transition:width 1.5s cubic-bezier(.25,.46,.45,.94); position:relative; background:linear-gradient(90deg,var(--bar-from),var(--bar-to)); }
+.conf-fill::after { content:''; position:absolute; top:0;left:0;right:0;bottom:0; background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.3) 50%,transparent 100%); animation:barShimmer 2.5s ease-in-out infinite; }
 @keyframes barShimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(200%)} }
+.conf-value { font-family:'Orbitron',sans-serif; font-size:2rem; font-weight:800; margin-top:10px; text-align:right; }
 
-/* ===== EXPLANATION & FLAGS ===== */
-.explanation-block {
-background:rgba(124,58,237,0.12); border-left:3px solid var(--accent);
-padding:16px 20px; margin:18px 0; border-radius:0 12px 12px 0;
-font-family:'Rajdhani',sans-serif; font-size:1.05rem; color:#f3e8ff; line-height:1.6;
-}
-.red-flag { display:flex; align-items:flex-start; gap:14px; padding:14px 18px; margin:8px 0; background:rgba(244,63,94,0.08); border:1px solid rgba(244,63,94,0.25); border-radius:12px; transition:all 0.3s ease; }
-.red-flag:hover { background:rgba(244,63,94,0.14); border-color:rgba(244,63,94,0.5); transform:translateX(6px); }
-.flag-num { font-family:'Orbitron',sans-serif; font-size:0.75rem; font-weight:700; color:#f43f5e; background:rgba(244,63,94,0.18); padding:4px 10px; border-radius:6px; }
-.flag-text { font-family:'Rajdhani',sans-serif; font-size:1.05rem; color:#fce7f3; line-height:1.4; }
-.rec-box { background:linear-gradient(135deg,rgba(168,85,247,0.1),rgba(99,102,241,0.06)); border:1px solid rgba(168,85,247,0.3); border-radius:14px; padding:20px 24px; margin:18px 0; }
-.rec-label { font-family:'Orbitron',sans-serif; font-size:0.85rem; font-weight:700; color:var(--fg2); letter-spacing:3px; margin-bottom:8px; }
-.rec-text { font-family:'Rajdhani',sans-serif; font-size:1.1rem; color:#f3e8ff; line-height:1.6; }
+.explanation-block { background:rgba(255,255,255,0.02); border-left:2px solid rgba(0,255,200,0.3); padding:18px 22px; margin:20px 0; border-radius:0 12px 12px 0; font-family:'Rajdhani',sans-serif; font-size:1.05rem; color:rgba(230,241,255,0.85); line-height:1.7; }
+
+.red-flag { display:flex; align-items:flex-start; gap:14px; padding:14px 18px; margin:8px 0; background:rgba(255,51,85,0.04); border:1px solid rgba(255,51,85,0.15); border-radius:12px; transition:all 0.3s ease; animation:flagSlide 0.5s ease-out backwards; }
+.red-flag:hover { background:rgba(255,51,85,0.08); border-color:rgba(255,51,85,0.3); transform:translateX(6px); }
+@keyframes flagSlide { from{opacity:0;transform:translateX(-20px)} to{opacity:1;transform:translateX(0)} }
+.flag-num { font-family:'Orbitron',sans-serif; font-size:0.75rem; font-weight:700; color:#ff3355; background:rgba(255,51,85,0.15); padding:4px 10px; border-radius:6px; white-space:nowrap; }
+.flag-text { font-family:'Rajdhani',sans-serif; font-size:1rem; color:rgba(230,241,255,0.8); line-height:1.5; }
+
+.rec-box { background:linear-gradient(135deg,rgba(0,255,200,0.04),rgba(0,180,255,0.02)); border:1px solid rgba(0,255,200,0.15); border-radius:14px; padding:22px 26px; margin:20px 0; }
+.rec-label { font-family:'Orbitron',sans-serif; font-size:0.85rem; font-weight:700; color:#00ffc8; letter-spacing:3px; margin-bottom:10px; }
+.rec-text { font-family:'Rajdhani',sans-serif; font-size:1.05rem; color:rgba(230,241,255,0.85); line-height:1.6; }
 
 /* ===== STAT TILES ===== */
-.stat-tile {
-background:var(--bg-card); border:1px solid rgba(168,85,247,0.22);
-border-radius:16px; padding:24px 18px; text-align:center;
-position:relative; overflow:hidden; transition:all 0.4s ease; box-shadow:var(--shadow);
-}
-.stat-tile:hover { transform:translateY(-8px) scale(1.02); border-color:rgba(168,85,247,0.55); box-shadow:0 18px 40px rgba(0,0,0,0.6),var(--glow-md); }
-.stat-tile::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,#a855f7,transparent); opacity:0; transition:opacity 0.3s; }
+.stat-tile { background:rgba(10,15,30,0.8); border:1px solid rgba(0,255,200,0.12); border-radius:16px; padding:25px 20px; text-align:center; position:relative; overflow:hidden; transition:all 0.4s cubic-bezier(.25,.46,.45,.94); }
+.stat-tile:hover { transform:translateY(-8px) scale(1.02); border-color:rgba(0,255,200,0.3); box-shadow:0 15px 40px rgba(0,0,0,0.3),0 0 30px rgba(0,255,200,0.08); }
+.stat-tile::before { content:''; position:absolute; top:0;left:0;right:0; height:2px; background:linear-gradient(90deg,transparent,#00ffc8,transparent); opacity:0; transition:opacity 0.3s; }
 .stat-tile:hover::before { opacity:1; }
-.stat-icon { font-size:2.2rem; margin-bottom:8px; display:block; }
-.stat-number { font-family:'Orbitron',sans-serif; font-size:2.4rem; font-weight:900; background:linear-gradient(135deg,#f3e8ff,#c084fc,#ec4899); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:4px; }
-.stat-label { font-family:'Share Tech Mono',monospace; font-size:0.8rem; color:rgba(216,180,254,0.7); letter-spacing:2px; text-transform:uppercase; }
+.stat-icon { font-size:2rem; margin-bottom:12px; display:block; }
+.stat-number { font-family:'Orbitron',sans-serif; font-size:2.2rem; font-weight:800; background:linear-gradient(135deg,#00ffc8,#00b4ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:5px; }
+.stat-label { font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:rgba(0,255,200,0.45); letter-spacing:2px; text-transform:uppercase; }
 
-/* ===== TIP CARDS — FULLY OPAQUE DARK ===== */
-.tip-card-3d {
-background: var(--bg-card);
-border: 1px solid rgba(168,85,247,0.28);
-border-radius:16px; padding:22px 18px; text-align:center;
-height:195px; display:flex; flex-direction:column; align-items:center; justify-content:center;
-transition:all 0.4s cubic-bezier(0.25,0.46,0.45,0.94);
-box-shadow:var(--shadow), inset 0 1px 0 rgba(168,85,247,0.08);
-position:relative; overflow:hidden;
-}
-.tip-card-3d::before { content:''; position:absolute; top:0; left:0; right:0; height:2px; background:linear-gradient(90deg,transparent,rgba(168,85,247,0.7),transparent); opacity:0; transition:opacity 0.3s; }
-.tip-card-3d:hover { transform:translateY(-8px) perspective(600px) rotateX(4deg); border-color:rgba(168,85,247,0.6); box-shadow:0 16px 35px rgba(0,0,0,0.65),var(--glow-md); }
-.tip-card-3d:hover::before { opacity:1; }
-.tip-icon-3d { font-size:2.4rem; margin-bottom:12px; transition:transform 0.4s ease; }
-.tip-card-3d:hover .tip-icon-3d { transform:scale(1.2) rotate(6deg); }
-.tip-title-3d { font-family:'Orbitron',sans-serif; font-size:0.9rem; font-weight:700; color:#e9d5ff; letter-spacing:2px; margin-bottom:8px; }
-.tip-desc-3d { font-family:'Rajdhani',sans-serif; font-size:0.95rem; color:rgba(216,180,254,0.78); line-height:1.4; }
+/* ===== TIPS ===== */
+.tip-card-3d { background:rgba(10,15,30,0.7); border:1px solid rgba(0,255,200,0.1); border-radius:16px; padding:24px 20px; text-align:center; transition:all 0.4s cubic-bezier(.25,.46,.45,.94); position:relative; overflow:hidden; height:200px; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+.tip-card-3d:hover { transform:translateY(-8px) perspective(800px) rotateX(3deg); border-color:rgba(0,255,200,0.3); box-shadow:0 20px 40px rgba(0,0,0,0.3),0 0 25px rgba(0,255,200,0.06); }
+.tip-card-3d::after { content:''; position:absolute; bottom:0;left:0;right:0; height:2px; background:linear-gradient(90deg,transparent,var(--tip-color,#00ffc8),transparent); opacity:0; transition:opacity 0.3s; }
+.tip-card-3d:hover::after { opacity:1; }
+.tip-icon-3d { font-size:2.5rem; margin-bottom:15px; display:inline-block; transition:transform 0.4s ease; }
+.tip-card-3d:hover .tip-icon-3d { transform:scale(1.2) rotate(5deg); }
+.tip-title-3d { font-family:'Orbitron',sans-serif; font-size:0.85rem; font-weight:700; color:#00ffc8; letter-spacing:2px; margin-bottom:10px; }
+.tip-desc-3d { font-family:'Rajdhani',sans-serif; font-size:0.9rem; color:rgba(0,255,200,0.45); line-height:1.5; }
+
+/* (Security internals hidden from UI for OPSEC) */
 
 /* ===== LOADER ===== */
-.loader-3d { text-align:center; padding:50px 20px; }
-.loader-radar { width:85px; height:85px; margin:0 auto 20px; border:3px solid transparent; border-top-color:#a855f7; border-right-color:#ec4899; border-radius:50%; animation:radarSpin 1s linear infinite; position:relative; box-shadow:0 0 28px rgba(168,85,247,0.4); }
-.loader-radar::before { content:''; position:absolute; inset:8px; border:2px solid transparent; border-bottom-color:#8b5cf6; border-left-color:#06b6d4; border-radius:50%; animation:radarSpin 0.7s linear infinite reverse; }
-.loader-radar::after { content:'🛡️'; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:1.6rem; animation:radarPulse 1.5s ease-in-out infinite; }
-@keyframes radarSpin  { from{transform:rotate(0deg)}   to{transform:rotate(360deg)} }
-@keyframes radarPulse { 0%,100%{transform:translate(-50%,-50%) scale(1)} 50%{transform:translate(-50%,-50%) scale(1.2)} }
-.loader-text { font-family:'Orbitron',sans-serif; font-size:1rem; color:var(--fg2); letter-spacing:4px; animation:pulseText 1.5s ease-in-out infinite; }
-@keyframes pulseText { 0%,100%{opacity:1} 50%{opacity:0.4} }
-.loader-subtext { font-family:'Share Tech Mono',monospace; font-size:0.8rem; color:rgba(216,180,254,0.5); letter-spacing:2px; margin-top:6px; }
-
-/* ===== HISTORY ===== */
-.history-row { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; margin:6px 0; background:var(--bg-card); border:1px solid rgba(168,85,247,0.15); border-radius:10px; font-family:'Share Tech Mono',monospace; font-size:0.85rem; transition:all 0.2s ease; }
-.history-row:hover { background:var(--bg-panel); border-color:rgba(168,85,247,0.42); }
+.loader-3d { text-align:center; padding:60px 20px; }
+.loader-ring { width:80px; height:80px; margin:0 auto 25px; border:3px solid transparent; border-top-color:#00ffc8; border-right-color:#00b4ff; border-radius:50%; animation:spin3d 1s linear infinite; position:relative; }
+.loader-ring::before { content:''; position:absolute; top:6px;left:6px;right:6px;bottom:6px; border:2px solid transparent; border-bottom-color:#7b2fff; border-left-color:#00ffc8; border-radius:50%; animation:spin3d 0.7s linear infinite reverse; }
+.loader-ring::after { content:'🛡️'; position:absolute; top:50%;left:50%; transform:translate(-50%,-50%); font-size:1.5rem; animation:pulse 1.5s ease-in-out infinite; }
+@keyframes spin3d { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+@keyframes pulse { 0%,100%{transform:translate(-50%,-50%) scale(1)} 50%{transform:translate(-50%,-50%) scale(1.2)} }
+.loader-text { font-family:'Orbitron',sans-serif; font-size:0.9rem; color:#00ffc8; letter-spacing:4px; animation:blink 1.5s ease-in-out infinite; }
+.loader-subtext { font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:rgba(0,255,200,0.3); letter-spacing:2px; margin-top:8px; }
 
 /* ===== FOOTER ===== */
-.footer-futuristic { text-align:center; padding:35px 20px 20px; }
-.footer-brand { font-family:'Orbitron',sans-serif; font-size:1.25rem; font-weight:800; letter-spacing:4px; background:linear-gradient(135deg,#c084fc,#ec4899,#8b5cf6); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-.footer-sub { font-family:'Share Tech Mono',monospace; font-size:0.8rem; color:rgba(216,180,254,0.4); letter-spacing:3px; margin-top:6px; }
+.footer-futuristic { text-align:center; padding:40px 20px; position:relative; }
+.footer-brand { font-family:'Orbitron',sans-serif; font-size:1.2rem; font-weight:700; letter-spacing:4px; background:linear-gradient(135deg,#00ffc8,#00b4ff,#7b2fff); background-size:200% auto; -webkit-background-clip:text; -webkit-text-fill-color:transparent; animation:titleGradient 3s ease infinite; }
+.footer-sub { font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:rgba(0,255,200,0.25); letter-spacing:3px; margin-top:8px; }
 
-/* ===== STREAMLIT WIDGET OVERRIDES ===== */
+/* ===== SECURITY ALERT ===== */
+.sec-alert { background:linear-gradient(135deg,rgba(255,193,7,0.08),rgba(255,150,0,0.04)); border:1px solid rgba(255,193,7,0.25); border-radius:12px; padding:16px 20px; margin:10px 0; display:flex; align-items:center; gap:12px; }
+.sec-alert-icon { font-size:1.5rem; }
+.sec-alert-text { font-family:'Rajdhani',sans-serif; font-size:0.95rem; color:rgba(255,193,7,0.9); }
+
+/* ===== HIDE DEFAULTS ===== */
 #MainMenu, footer, header { visibility:hidden !important; }
 .stDeployButton { display:none !important; }
-::-webkit-scrollbar { width:7px; }
-::-webkit-scrollbar-track { background:var(--bg-base); }
-::-webkit-scrollbar-thumb { background:rgba(168,85,247,0.3); border-radius:4px; }
-::-webkit-scrollbar-thumb:hover { background:rgba(168,85,247,0.6); }
-
-/* Expanders */
-.streamlit-expanderHeader,[data-testid="stExpander"] summary,details summary {
-font-family:'Orbitron',sans-serif !important; font-size:0.85rem !important;
-color:var(--fg2) !important; letter-spacing:2px !important;
-background:var(--bg-deep) !important; border:1px solid rgba(168,85,247,0.25) !important; border-radius:10px !important;
-}
-[data-testid="stExpander"] { background:var(--bg-deep) !important; border:1px solid rgba(168,85,247,0.2) !important; border-radius:12px !important; }
-
-/* Selectbox */
-[data-testid="stSelectbox"] > div > div, .stSelectbox > div > div, [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-background:var(--bg-deep) !important; border:1px solid rgba(168,85,247,0.4) !important; border-radius:10px !important; color:#e9d5ff !important;
-}
-[data-baseweb="menu"],[data-baseweb="popover"],ul[data-baseweb="menu"] { background:var(--bg-deep) !important; border:1px solid rgba(168,85,247,0.4) !important; border-radius:12px !important; }
-li[role="option"] { color:#e9d5ff !important; }
-li[role="option"]:hover { background:rgba(168,85,247,0.18) !important; }
-
-/* Radio */
-[data-testid="stRadio"] label, .stRadio label { color:var(--fg2) !important; font-family:'Rajdhani',sans-serif !important; }
-[data-testid="stRadio"] > div { background:transparent !important; gap:4px; }
-
-/* File Uploader */
-[data-testid="stFileUploader"],[data-testid="stFileUploadDropzone"] {
-background:var(--bg-deep) !important; border:2px dashed rgba(168,85,247,0.35) !important; border-radius:16px !important; color:var(--fg2) !important;
-}
-
-/* Tabs */
-[data-testid="stTabs"] [role="tablist"] { background:var(--bg-deep) !important; border-bottom:1px solid rgba(168,85,247,0.3) !important; border-radius:12px 12px 0 0 !important; gap:4px !important; padding:4px 6px !important; }
-[data-testid="stTabs"] [role="tab"] { font-family:'Orbitron',sans-serif !important; font-size:0.78rem !important; font-weight:600 !important; letter-spacing:2px !important; color:rgba(192,132,252,0.65) !important; background:transparent !important; border:none !important; padding:10px 18px !important; border-radius:8px !important; transition:all 0.25s ease !important; }
-[data-testid="stTabs"] [role="tab"]:hover { color:#e9d5ff !important; background:rgba(168,85,247,0.12) !important; }
-[data-testid="stTabs"] [role="tab"][aria-selected="true"] { color:#fff !important; background:linear-gradient(135deg,rgba(124,58,237,0.4),rgba(168,85,247,0.28)) !important; border:1px solid rgba(168,85,247,0.55) !important; box-shadow:0 0 16px rgba(168,85,247,0.35) !important; }
-[data-testid="stTabsTabPanel"] { background:transparent !important; padding:0 !important; }
-
-/* Labels & Markdown */
-label, .stLabel,
-[data-testid="stWidgetLabel"] > div, [data-testid="stWidgetLabel"] p,
-[data-testid="stMarkdownContainer"] > p, [data-testid="stMarkdownContainer"] > ul > li,
-[data-testid="stMarkdownContainer"] > h1, [data-testid="stMarkdownContainer"] > h2, [data-testid="stMarkdownContainer"] > h3 {
-color:var(--fg) !important;
-}
-
-/* Metric Cards */
-[data-testid="stMetric"] { background:var(--bg-card) !important; border:1px solid rgba(168,85,247,0.2) !important; border-radius:12px !important; padding:12px !important; }
-[data-testid="stMetricValue"] { color:#e9d5ff !important; }
-[data-testid="stMetricDelta"] { color:#a855f7 !important; }
-[data-testid="stMetricLabel"] { color:var(--fg2) !important; }
-
-/* Checkbox/Toggle */
-[data-testid="stCheckbox"] label,[data-testid="stToggle"] label { color:var(--fg2) !important; }
-
-/* Number/Text Input */
-[data-testid="stNumberInput"] input,[data-testid="stTextInput"] input {
-background:var(--bg-input) !important; background-color:var(--bg-input) !important;
-border:1px solid rgba(168,85,247,0.35) !important; border-radius:10px !important;
-color:#f3e8ff !important; font-family:'Share Tech Mono','Courier New',monospace !important;
-}
-[data-testid="stNumberInput"] input:focus,[data-testid="stTextInput"] input:focus {
-border-color:#a855f7 !important; box-shadow:0 0 14px rgba(168,85,247,0.25) !important;
-}
-
-/* Alerts */
-[data-testid="stAlert"] { background:var(--bg-card) !important; border-radius:12px !important; color:var(--fg) !important; }
-[data-testid="stInfo"]    { background:rgba(99,102,241,0.1)  !important; border-left:3px solid #6366f1 !important; }
-[data-testid="stSuccess"] { background:rgba(16,185,129,0.09) !important; border-left:3px solid #10b981 !important; }
-[data-testid="stWarning"] { background:rgba(245,158,11,0.09) !important; border-left:3px solid #f59e0b !important; }
-[data-testid="stError"]   { background:rgba(244,63,94,0.09)  !important; border-left:3px solid #f43f5e !important; }
-[data-testid="stTooltipIcon"] { color:#a855f7 !important; }
-hr { border-color:rgba(168,85,247,0.2) !important; }
-.block-container { padding-top:1rem !important; padding-bottom:2rem !important; max-width:1400px !important; }
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-track { background:#050510; }
+::-webkit-scrollbar-thumb { background:rgba(0,255,200,0.2); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:rgba(0,255,200,0.4); }
+.streamlit-expanderHeader { font-family:'Orbitron',sans-serif !important; font-size:0.8rem !important; color:rgba(0,255,200,0.5) !important; letter-spacing:2px !important; }
 </style>
 
-<!-- Floating Particles -->
+<!-- PARTICLES -->
 <div class="particles">
-<div class="particle"></div><div class="particle"></div>
-<div class="particle"></div><div class="particle"></div>
-<div class="particle"></div><div class="particle"></div>
-<div class="particle"></div><div class="particle"></div>
-<div class="particle"></div><div class="particle"></div>
+    <div class="particle"></div><div class="particle"></div><div class="particle"></div>
+    <div class="particle"></div><div class="particle"></div><div class="particle"></div>
+    <div class="particle"></div><div class="particle"></div><div class="particle"></div>
+    <div class="particle"></div>
 </div>
-
 """, unsafe_allow_html=True)
 
 # ================================
@@ -1585,53 +1184,43 @@ hr { border-color:rgba(168,85,247,0.2) !important; }
 # ================================
 
 st.markdown("""
-
-
 <div class="hero-zone">
-<div class="shield-3d">🛡️</div>
-<div class="main-title">PHISHSHIELD AI</div>
-<div class="main-subtitle">NEXT-GEN NEURAL THREAT DEFENSE PLATFORM</div>
-<div style="margin-top: 10px;">
-<div class="status-line">
-<span class="online">● ONLINE</span>
-&nbsp;|&nbsp; ENGINE: GEMINI-3.X &nbsp;|&nbsp; SHIELD: ARMED
+    <div class="shield-3d">🛡️</div>
+    <div class="main-title">PHISHSHIELD AI</div>
+    <div class="main-subtitle">AUTOMATED THREAT DETECTION SYSTEM</div>
+    <div class="status-line">
+        SYS.STATUS: <span class="online">● ONLINE</span> &nbsp;|&nbsp;
+        AI.ENGINE: GEMINI-3.6 &nbsp;|&nbsp;
+        PROTOCOL: ACTIVE
+    </div>
 </div>
-</div>
-</div>
-
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
 # ================================
-# 9. TOP BAR — MODE + LANGUAGE
+# 9. TOP BAR — MODE + LANGUAGE + THEME
 # ================================
 
-top_c1, top_c2 = st.columns([3, 2], gap="large")
+top_c1, top_c2, top_c3 = st.columns([3, 2, 2])
 
 with top_c1:
     st.markdown("""
-
-
-<div class="section-title" style="font-size:0.95rem; margin-bottom:6px;">
-<span class="dot"></span> INPUT PROTOCOL
-</div>
-
-""", unsafe_allow_html=True)
+    <div class="section-title" style="font-size:1rem; margin-bottom:8px;">
+        <span class="dot"></span> SELECT INPUT MODE
+    </div>
+    """, unsafe_allow_html=True)
     input_mode = st.radio(
-        "", ["\U0001f4dd TEXT", "\U0001f5bc\ufe0f IMAGE", "\U0001f4e7 HEADERS", "\U0001f4f7 QR CODE", "\U0001f4cb BATCH URLs"],
+        "", ["📝 TEXT", "🖼️ IMAGE", "📧 HEADERS", "📷 QR CODE", "📋 BATCH URLs"],
         horizontal=True, label_visibility="collapsed", key="input_mode"
     )
 
 with top_c2:
     st.markdown("""
-
-
-<div class="section-title" style="font-size:0.95rem; margin-bottom:6px;">
-<span class="dot"></span> LINGUISTIC ENGINE
-</div>
-
-""", unsafe_allow_html=True)
+    <div class="section-title" style="font-size:1rem; margin-bottom:8px;">
+        <span class="dot"></span> LANGUAGE
+    </div>
+    """, unsafe_allow_html=True)
     analysis_language = st.selectbox(
         "", [
             ("en", "English"), ("hi", "Hindi"), ("es", "Spanish"),
@@ -1642,6 +1231,40 @@ with top_c2:
         format_func=lambda x: x[1], label_visibility="collapsed", key="lang_select"
     )
     selected_lang = analysis_language[0]
+
+with top_c3:
+    st.markdown("""
+    <div class="section-title" style="font-size:1rem; margin-bottom:8px;">
+        <span class="dot"></span> DISPLAY
+    </div>
+    """, unsafe_allow_html=True)
+    theme_mode = st.radio("", ["🌙 DARK", "☀️ LIGHT"], horizontal=True, label_visibility="collapsed", key="theme")
+    is_dark = "DARK" in theme_mode
+
+# Apply light theme overrides
+if not is_dark:
+    st.markdown("""<style>
+    .stApp { background: #f0f2f6 !important; }
+    .main-title { background: linear-gradient(135deg,#0083b0,#00b4db,#7b2fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .glass-panel { background: rgba(255,255,255,0.9) !important; border-color: rgba(0,180,255,0.2) !important; }
+    .section-title { color: #0083b0 !important; }
+    .section-title .dot { background: #0083b0 !important; box-shadow: 0 0 10px rgba(0,131,176,0.5) !important; }
+    .stTextArea textarea { background: rgba(255,255,255,0.95) !important; color: #1a1a2e !important; border-color: rgba(0,180,255,0.3) !important; }
+    .stTextArea textarea::placeholder { color: rgba(0,131,176,0.4) !important; }
+    .particle { display: none; }
+    .verdict-safe { background: linear-gradient(135deg,rgba(0,200,150,0.1),rgba(0,180,130,0.05)); border: 1px solid rgba(0,200,150,0.3); }
+    .verdict-suspicious { background: linear-gradient(135deg,rgba(255,193,7,0.1),rgba(255,150,0,0.05)); border: 1px solid rgba(255,193,7,0.3); }
+    .verdict-malicious { background: linear-gradient(135deg,rgba(255,51,85,0.1),rgba(220,30,60,0.05)); border: 1px solid rgba(255,51,85,0.3); }
+    .stat-tile { background: rgba(255,255,255,0.9) !important; border-color: rgba(0,180,255,0.15) !important; }
+    .tip-card-3d { background: rgba(255,255,255,0.9) !important; border-color: rgba(0,180,255,0.15) !important; }
+    .explanation-block { background: rgba(0,131,176,0.05); color: #1a1a2e; }
+    .red-flag { background: rgba(255,51,85,0.06); border-color: rgba(255,51,85,0.2); }
+    .flag-text { color: #1a1a2e; }
+    .rec-text { color: #1a1a2e; }
+    .tip-title-3d { color: #0083b0; }
+    .tip-desc-3d { color: #555; }
+    .footer-brand { background: linear-gradient(135deg,#0083b0,#00b4ff,#7b2fff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    </style>""", unsafe_allow_html=True)
 
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
@@ -1662,15 +1285,12 @@ if "TEXT" in input_mode:
 
     with col_left:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> TEXT INPUT <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> TEXT INPUT <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         user_input = st.text_area(
             "",
@@ -1682,15 +1302,12 @@ if "TEXT" in input_mode:
 
     with col_right:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> QUICK SIMULATION <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> QUICK SIMULATION <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         if st.button("🔴  PHISHING URL", key="ex1", use_container_width=True):
             st.session_state['ui_input'] = "https://paypal-secure-verify.xyz/account/update?token=abc123"
@@ -1724,15 +1341,12 @@ elif "IMAGE" in input_mode:
 
     with col_img_left:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> IMAGE UPLOAD <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> IMAGE UPLOAD <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         uploaded_image = st.file_uploader(
             "",
@@ -1753,88 +1367,70 @@ elif "IMAGE" in input_mode:
 
                 # Show preview
                 st.markdown(f"""
-
-
-<div class="image-preview-box">
-<div class="image-preview-label">PREVIEW — {uploaded_image.name}</div>
-</div>
-
-""", unsafe_allow_html=True)
+                <div class="image-preview-box">
+                    <div class="image-preview-label">PREVIEW — {uploaded_image.name}</div>
+                </div>
+                """, unsafe_allow_html=True)
                 st.image(uploaded_image, use_container_width=True)
 
                 # Show file info
                 file_size_kb = uploaded_image.size / 1024
                 st.markdown(f"""
-
-
-<div style="display:flex; gap:15px; margin-top:10px; font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:rgba(0,255,200,0.4);">
-<span>📎 {uploaded_image.name}</span>
-<span>📏 {file_size_kb:.1f} KB</span>
-<span>🖼️ {image_mime}</span>
-<span style="color:#00ffc8;">✓ VERIFIED</span>
-</div>
-
-""", unsafe_allow_html=True)
+                <div style="display:flex; gap:15px; margin-top:10px; font-family:'Share Tech Mono',monospace; font-size:0.75rem; color:rgba(0,255,200,0.4);">
+                    <span>📎 {uploaded_image.name}</span>
+                    <span>📏 {file_size_kb:.1f} KB</span>
+                    <span>🖼️ {image_mime}</span>
+                    <span style="color:#00ffc8;">✓ VERIFIED</span>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.markdown(f"""
-
-
-<div class="sec-alert">
-<div class="sec-alert-icon">⚠️</div>
-<div class="sec-alert-text">Upload rejected: {html.escape(validation_msg)}</div>
-</div>
-
-""", unsafe_allow_html=True)
+                <div class="sec-alert">
+                    <div class="sec-alert-icon">⚠️</div>
+                    <div class="sec-alert-text">Upload rejected: {html.escape(validation_msg)}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
     with col_img_right:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> IMAGE ANALYSIS TIPS <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> IMAGE ANALYSIS TIPS <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("""
+        <div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
+        <b style="color:#00ffc8;">📸 WHAT TO UPLOAD:</b><br><br>
 
+        • <b>Screenshots</b> of suspicious emails<br>
+        • <b>Phishing login pages</b><br>
+        • <b>Fake security alerts</b><br>
+        • <b>Suspicious text messages</b><br>
+        • <b>Social media scam posts</b><br><br>
 
-<div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
-<b style="color:#00ffc8;">📸 WHAT TO UPLOAD:</b><br><br>
+        <b style="color:#00ffc8;">🔍 AI WILL DETECT:</b><br><br>
 
-• <b>Screenshots</b> of suspicious emails<br>
-• <b>Phishing login pages</b><br>
-• <b>Fake security alerts</b><br>
-• <b>Suspicious text messages</b><br>
-• <b>Social media scam posts</b><br><br>
-
-<b style="color:#00ffc8;">🔍 AI WILL DETECT:</b><br><br>
-
-• Fake login forms<br>
-• Spoofed brand logos<br>
-• Urgency tactics<br>
-• Suspicious URLs<br>
-• Credential harvesting<br>
-</div>
-
-""", unsafe_allow_html=True)
+        • Fake login forms<br>
+        • Spoofed brand logos<br>
+        • Urgency tactics<br>
+        • Suspicious URLs<br>
+        • Credential harvesting<br>
+        </div>
+        """, unsafe_allow_html=True)
 
 elif "HEADERS" in input_mode:
     # EMAIL HEADER MODE
     col_h1, col_h2 = st.columns([5, 3], gap="large")
     with col_h1:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> EMAIL HEADERS <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> EMAIL HEADERS <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         header_text = st.text_area(
             "", height=250,
             placeholder=">> Paste raw email headers here...\n\n   Copy from: Gmail > Show Original > Copy to Clipboard\n   Or Outlook: File > Properties > Internet Headers",
@@ -1842,46 +1438,37 @@ elif "HEADERS" in input_mode:
         )
     with col_h2:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> HEADER ANALYSIS <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> HEADER ANALYSIS <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.markdown("""
-
-
-<div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
-<b style="color:#00ffc8;">📧 HOW TO GET HEADERS:</b><br><br>
-<b>Gmail:</b> Open email > ⋮ > Show Original > Copy<br>
-<b>Outlook:</b> Open email > File > Properties > Internet Headers<br>
-<b>Yahoo:</b> Open email > ⋮ > View Raw Message<br><br>
-<b style="color:#00ffc8;">🔍 WE CHECK:</b><br><br>
-• Sender vs Reply-To mismatch<br>
-• SPF / DKIM / DMARC status<br>
-• Email relay chain anomalies<br>
-• Spoofed display names
-</div>
-
-""", unsafe_allow_html=True)
+        <div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
+        <b style="color:#00ffc8;">📧 HOW TO GET HEADERS:</b><br><br>
+        <b>Gmail:</b> Open email > ⋮ > Show Original > Copy<br>
+        <b>Outlook:</b> Open email > File > Properties > Internet Headers<br>
+        <b>Yahoo:</b> Open email > ⋮ > View Raw Message<br><br>
+        <b style="color:#00ffc8;">🔍 WE CHECK:</b><br><br>
+        • Sender vs Reply-To mismatch<br>
+        • SPF / DKIM / DMARC status<br>
+        • Email relay chain anomalies<br>
+        • Spoofed display names
+        </div>
+        """, unsafe_allow_html=True)
 
 elif "QR" in input_mode:
     # QR CODE MODE
     col_q1, col_q2 = st.columns([5, 3], gap="large")
     with col_q1:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> QR CODE UPLOAD <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> QR CODE UPLOAD <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         qr_file = st.file_uploader("", type=["png","jpg","jpeg","gif","bmp"], label_visibility="collapsed", key="qr_upload")
         if qr_file:
             qr_image_bytes = qr_file.read()
@@ -1902,49 +1489,40 @@ elif "QR" in input_mode:
                 st.warning("QR library not available. Install pyzbar.")
     with col_q2:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> QR PHISHING (QUISHING) <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> QR PHISHING (QUISHING) <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.markdown("""
+        <div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
+        <b style="color:#00ffc8;">⚠️ QR CODES ARE A GROWING THREAT</b><br><br>
 
+        Attackers place malicious QR codes on:<br>
+        • Restaurant menus<br>
+        • Parking meters<br>
+        • Public posters<br>
+        • Phishing emails<br><br>
 
-<div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
-<b style="color:#00ffc8;">⚠️ QR CODES ARE A GROWING THREAT</b><br><br>
-
-Attackers place malicious QR codes on:<br>
-• Restaurant menus<br>
-• Parking meters<br>
-• Public posters<br>
-• Phishing emails<br><br>
-
-<b style="color:#00ffc8;">🔍 WE WILL:</b><br><br>
-• Decode the hidden URL<br>
-• Check the destination<br>
-• Analyze for phishing indicators
-</div>
-
-""", unsafe_allow_html=True)
+        <b style="color:#00ffc8;">🔍 WE WILL:</b><br><br>
+        • Decode the hidden URL<br>
+        • Check the destination<br>
+        • Analyze for phishing indicators
+        </div>
+        """, unsafe_allow_html=True)
 
 elif "BATCH" in input_mode:
     # BATCH URL MODE
     col_b1, col_b2 = st.columns([5, 3], gap="large")
     with col_b1:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> BATCH URL INPUT <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> BATCH URL INPUT <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         batch_text = st.text_area(
             "", height=250,
             placeholder=">> Paste multiple URLs (one per line) or paste email content to extract URLs:\n\n   https://example.com/link1\n   https://suspicious-site.xyz/verify\n   bit.ly/3xYzAbC",
@@ -1952,32 +1530,26 @@ elif "BATCH" in input_mode:
         )
     with col_b2:
         st.markdown("""
-
-
-<div class="glass-panel corner-decor">
-<div class="section-title">
-<span class="dot"></span> BATCH MODE <span class="line"></span>
-</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="glass-panel corner-decor">
+            <div class="section-title">
+                <span class="dot"></span> BATCH MODE <span class="line"></span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.markdown("""
+        <div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
+        <b style="color:#00ffc8;">📋 BATCH ANALYSIS</b><br><br>
 
+        Analyze up to <b>20 URLs</b> at once.<br><br>
 
-<div style="font-family:'Rajdhani',sans-serif; color:rgba(0,255,200,0.5); line-height:1.8; font-size:0.95rem;">
-<b style="color:#00ffc8;">📋 BATCH ANALYSIS</b><br><br>
+        <b style="color:#00ffc8;">💡 TIPS:</b><br><br>
 
-Analyze up to <b>20 URLs</b> at once.<br><br>
-
-<b style="color:#00ffc8;">💡 TIPS:</b><br><br>
-
-• Paste email content — we'll extract URLs<br>
-• One URL per line for best results<br>
-• Results shown in a color-coded table<br>
-• Great for checking email newsletters
-</div>
-
-""", unsafe_allow_html=True)
+        • Paste email content — we'll extract URLs<br>
+        • One URL per line for best results<br>
+        • Results shown in a color-coded table<br>
+        • Great for checking email newsletters
+        </div>
+        """, unsafe_allow_html=True)
 
 # ================================
 # 11. ANALYZE BUTTON
@@ -2005,14 +1577,11 @@ if analyze_clicked:
     rate_ok, rate_msg = check_rate_limit()
     if not rate_ok:
         st.markdown(f"""
-
-
-<div class="sec-alert">
-<div class="sec-alert-icon">🚫</div>
-<div class="sec-alert-text">{html.escape(rate_msg)}</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="sec-alert">
+            <div class="sec-alert-icon">🚫</div>
+            <div class="sec-alert-text">{html.escape(rate_msg)}</div>
+        </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
     # --- Determine what to analyze ---
@@ -2031,14 +1600,11 @@ if analyze_clicked:
     sec_valid, sec_msg = validate_request_integrity(check_text, qr_image_bytes if has_qr else None)
     if not sec_valid:
         st.markdown(f"""
-
-
-<div class="sec-alert">
-<div class="sec-alert-icon">🚫</div>
-<div class="sec-alert-text">{html.escape(sec_msg)}</div>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="sec-alert">
+            <div class="sec-alert-icon">🚫</div>
+            <div class="sec-alert-text">{html.escape(sec_msg)}</div>
+        </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
     # --- Loading ---
@@ -2133,27 +1699,17 @@ if analyze_clicked:
     time.sleep(0.5)
     loading_placeholder.empty()
 
-    # --- Threat Intelligence Multi-Vector Enrichment ---
+    # --- WHOIS enrichment for URL-based inputs ---
     whois_data = None
-    ssl_data = None
-    meta_data = None
-    vt_data = None
-
-    if result and input_type in ("text", "batch", "qr_code"):
-        urls_check = extract_urls_from_text(preview if input_type == "text" else batch_text if input_type == "batch" else preview)
+    if result and input_type in ("text", "batch"):
+        urls_check = extract_urls_from_text(preview if input_type == "text" else batch_text)
         if urls_check:
             try:
-                target_url = urls_check[0]
-                domain = urlparse(target_url).netloc or target_url.split('/')[0]
+                domain = urlparse(urls_check[0]).netloc
                 if domain:
                     whois_data = whois_lookup(domain)
-                    ssl_data = inspect_ssl_cert(domain)
-                    meta_data = inspect_webpage_meta(target_url)
-                    vt_data = virustotal_lookup(domain)
             except Exception:
                 pass
-
-    threat_matrix = compute_threat_index(result, whois_data, ssl_data, meta_data, vt_data)
 
     time.sleep(0.5)
     loading_placeholder.empty()
@@ -2170,67 +1726,48 @@ if analyze_clicked:
     recommendation = result.get("recommendation", "No recommendation available.")
 
     v_map = {
-        "Safe": ("result-safe", "✅", "#10b981", "#10b981", "#059669"),
-        "Suspicious": ("result-suspicious", "⚠️", "#f59e0b", "#f59e0b", "#d97706"),
-        "Malicious": ("result-malicious", "🚨", "#f43f5e", "#f43f5e", "#dc2626"),
+        "Safe": ("result-safe", "✅", "#00ffc8", "#00ffc8", "#00b4ff"),
+        "Suspicious": ("result-suspicious", "⚠️", "#ffc107", "#ffc107", "#ff9800"),
+        "Malicious": ("result-malicious", "🚨", "#ff3355", "#ff3355", "#cc0033"),
     }
     vc, icon, color, bar_from, bar_to = v_map.get(verdict, ("result-error", "❌", "#888", "#666", "#888"))
 
     # Mode badge
-    mode_badge = f'<span style="font-family:Share Tech Mono,monospace;font-size:0.75rem;color:var(--text-secondary);letter-spacing:2px;">[ MODE: {input_type.upper()} ]</span>'
+    mode_badge = f'<span style="font-family:Share Tech Mono,monospace;font-size:0.7rem;color:rgba(0,255,200,0.4);letter-spacing:2px;">[ MODE: {input_type.upper()} ]</span>'
 
-    # --- Main Result Panel ---
+    # --- Display results ---
     st.markdown(f"""
-<div class="result-3d {vc}">
-<div style="display:flex; justify-content:space-between; align-items:center;">
-<div class="verdict-label">ANALYSIS COMPLETE</div>
-{mode_badge}
-</div>
-<div class="verdict-text">{icon} {verdict.upper()}</div>
+    <div class="result-3d {vc}">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="verdict-label">ANALYSIS COMPLETE</div>
+            {mode_badge}
+        </div>
+        <div class="verdict-text">{icon} {verdict.upper()}</div>
 
-<div class="confidence-wrap">
-<div class="conf-header">
-<span>PHISHSHIELD THREAT INDEX (MULTI-VECTOR SCORE)</span>
-<span>{threat_matrix['threat_index']} / 100</span>
-</div>
-<div class="conf-track">
-<div class="conf-fill" style="width: {threat_matrix['threat_index']}%; background: linear-gradient(90deg, {bar_from}, {bar_to});"></div>
-</div>
-<div class="conf-value" style="color: {threat_matrix['risk_color']}; font-weight: bold; margin-top: 6px;">STATUS: {threat_matrix['risk_level']}</div>
-</div>
+        <div class="confidence-wrap">
+            <div class="conf-label">CONFIDENCE LEVEL</div>
+            <div class="conf-track">
+                <div class="conf-fill" style="width: {confidence}%; --bar-from: {bar_from}; --bar-to: {bar_to};"></div>
+            </div>
+            <div class="conf-value" style="color: {color};">{confidence}%</div>
+        </div>
 
-<div class="explanation-block">
-<div class="conf-label" style="margin-bottom: 8px;">ANALYSIS SUMMARY</div>
-{html.escape(explanation)}
-</div>
-</div>
-""", unsafe_allow_html=True)
-
-    # --- Multi-Vector Intelligence HUD Cards ---
-    if ssl_data or whois_data or vt_data or meta_data:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            ssl_val = "Valid 🔐" if ssl_data and ssl_data.get("valid") else "Invalid / Missing ⚠️"
-            st.metric("SSL Certificate", ssl_val, delta=f"{ssl_data.get('expires_in_days', 0)}d left" if ssl_data and ssl_data.get("valid") else "High Risk")
-        with c2:
-            age_val = f"{whois_data.get('age_days', 0)} days" if whois_data and whois_data.get('age_days') else "Unknown"
-            st.metric("Domain Age", age_val, delta="Young Domain" if whois_data and whois_data.get("is_young") else "Established", delta_color="inverse" if whois_data and whois_data.get("is_young") else "normal")
-        with c3:
-            vt_val = f"{vt_data.get('malicious', 0)} Malicious" if vt_data and vt_data.get("status") == "success" else "Unconfigured"
-            st.metric("VirusTotal Engine", vt_val, delta="Clean" if vt_data and vt_data.get("malicious", 0) == 0 else "Flagged", delta_color="normal" if vt_data and vt_data.get("malicious", 0) == 0 else "inverse")
-        with c4:
-            meta_val = "Impersonation Risk 🚨" if meta_data and meta_data.get("impersonation_risk") else "Clean Match ✅"
-            st.metric("DOM Brand Match", meta_val, delta=meta_data.get("impersonated_brand", "").title() if meta_data and meta_data.get("impersonated_brand") else "Verified")
+        <div class="explanation-block">
+            <div class="conf-label" style="margin-bottom: 8px;">EXPLANATION</div>
+            {html.escape(explanation)}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # Red flags
     if red_flags:
         st.markdown(f"""
-<div class="section-title" style="margin-top: 25px;">
-<span class="dot" style="background: #f43f5e; box-shadow: 0 0 10px rgba(244,63,94,0.5);"></span>
-RED FLAGS DETECTED ({len(red_flags)})
-<span class="line" style="background: linear-gradient(90deg, rgba(244,63,94,0.3), transparent);"></span>
-</div>
-""", unsafe_allow_html=True)
+        <div class="section-title" style="margin-top: 25px;">
+            <span class="dot" style="background: #ff3355; box-shadow: 0 0 10px rgba(255,51,85,0.5);"></span>
+            RED FLAGS DETECTED ({len(red_flags)})
+            <span class="line" style="background: linear-gradient(90deg, rgba(255,51,85,0.3), transparent);"></span>
+        </div>
+        """, unsafe_allow_html=True)
         flags_html = ""
         for i, f in enumerate(red_flags):
             flags_html += f"""<div class="red-flag" style="animation-delay:{i*0.1}s;"><span class="flag-num">#{i+1}</span><span class="flag-text">{html.escape(str(f))}</span></div>"""
@@ -2238,11 +1775,11 @@ RED FLAGS DETECTED ({len(red_flags)})
 
     # Recommendation
     st.markdown(f"""
-<div class="rec-box">
-<div class="rec-label">💡 RECOMMENDED DEFENSIVE ACTION</div>
-<div class="rec-text">{html.escape(recommendation)}</div>
-</div>
-""", unsafe_allow_html=True)
+    <div class="rec-box">
+        <div class="rec-label">💡 RECOMMENDED ACTION</div>
+        <div class="rec-text">{html.escape(recommendation)}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # --- PDF Export ---
     if PDF_AVAILABLE and input_type != "batch":
@@ -2253,14 +1790,11 @@ RED FLAGS DETECTED ({len(red_flags)})
     # --- Batch Results Table ---
     if result.get("batch_results"):
         st.markdown("""
-
-
-<div class="section-title" style="margin-top:20px;">
-<span class="dot"></span> BATCH ANALYSIS RESULTS
-<span class="line"></span>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="section-title" style="margin-top:20px;">
+            <span class="dot"></span> BATCH ANALYSIS RESULTS
+            <span class="line"></span>
+        </div>
+        """, unsafe_allow_html=True)
         batch_html = "<div style='overflow-x:auto;'>"
         for br in result["batch_results"]:
             bv = br.get("verdict", "?")
@@ -2284,14 +1818,11 @@ RED FLAGS DETECTED ({len(red_flags)})
     if result.get("header_data"):
         hd = result["header_data"]
         st.markdown("""
-
-
-<div class="section-title" style="margin-top:20px;">
-<span class="dot"></span> EMAIL HEADER DETAILS
-<span class="line"></span>
-</div>
-
-""", unsafe_allow_html=True)
+        <div class="section-title" style="margin-top:20px;">
+            <span class="dot"></span> EMAIL HEADER DETAILS
+            <span class="line"></span>
+        </div>
+        """, unsafe_allow_html=True)
         hdr_html = """
         <div class="sec-dash" style="padding:20px;">
         """
@@ -2342,23 +1873,14 @@ RED FLAGS DETECTED ({len(red_flags)})
     st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown(f"""
-
-<div class="stat-tile"><span class="stat-icon">📊</span><div class="stat-number">{confidence}%</div><div class="stat-label">Confidence</div></div>
-""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="stat-tile"><span class="stat-icon">📊</span><div class="stat-number">{confidence}%</div><div class="stat-label">Confidence</div></div>""", unsafe_allow_html=True)
     with c2:
         fc = len(red_flags)
-        st.markdown(f"""
-
-<div class="stat-tile"><span class="stat-icon">🚩</span><div class="stat-number">{fc}</div><div class="stat-label">Red Flags</div></div>
-""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="stat-tile"><span class="stat-icon">🚩</span><div class="stat-number">{fc}</div><div class="stat-label">Red Flags</div></div>""", unsafe_allow_html=True)
     with c3:
         status = "SECURE" if verdict == "Safe" else "ALERT" if verdict == "Suspicious" else "DANGER"
         sc = "#00ffc8" if verdict == "Safe" else "#ffc107" if verdict == "Suspicious" else "#ff3355"
-        st.markdown(f"""
-
-<div class="stat-tile"><span class="stat-icon">🛡️</span><div class="stat-number" style="background:linear-gradient(135deg,{sc},{sc}88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">{status}</div><div class="stat-label">Security Level</div></div>
-""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="stat-tile"><span class="stat-icon">🛡️</span><div class="stat-number" style="background:linear-gradient(135deg,{sc},{sc}88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">{status}</div><div class="stat-label">Security Level</div></div>""", unsafe_allow_html=True)
 
 # ================================
 # 13. CYBERSECURITY TIPS
@@ -2367,14 +1889,11 @@ RED FLAGS DETECTED ({len(red_flags)})
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
 st.markdown("""
-
-
 <div class="section-title" style="justify-content:center; font-size:1.2rem;">
-<span class="dot"></span>
-INTEL BRIEFING — SECURITY PROTOCOLS
-<span class="line" style="max-width:200px;"></span>
+    <span class="dot"></span>
+    INTEL BRIEFING — SECURITY PROTOCOLS
+    <span class="line" style="max-width:200px;"></span>
 </div>
-
 """, unsafe_allow_html=True)
 
 r1c1, r1c2, r1c3 = st.columns(3)
@@ -2384,10 +1903,7 @@ for col, (ic, ti, de) in zip([r1c1, r1c2, r1c3], [
     ("📧", "INSPECT SENDER", "Scammers spoof email addresses. Always verify the sender's actual email, not just the display name."),
 ]):
     with col:
-        st.markdown(f"""
-
-<div class="tip-card-3d" style="--tip-color:#00ffc8;"><div class="tip-icon-3d">{ic}</div><div class="tip-title-3d">{ti}</div><div class="tip-desc-3d">{de}</div></div>
-""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="tip-card-3d" style="--tip-color:#00ffc8;"><div class="tip-icon-3d">{ic}</div><div class="tip-title-3d">{ti}</div><div class="tip-desc-3d">{de}</div></div>""", unsafe_allow_html=True)
 
 r2c1, r2c2, r2c3 = st.columns(3)
 for col, (ic, ti, de) in zip([r2c1, r2c2, r2c3], [
@@ -2396,10 +1912,7 @@ for col, (ic, ti, de) in zip([r2c1, r2c2, r2c3], [
     ("🛡️", "ENABLE 2FA", "Two-factor authentication adds a critical second layer of defense against account takeovers."),
 ]):
     with col:
-        st.markdown(f"""
-
-<div class="tip-card-3d" style="--tip-color:#00b4ff;"><div class="tip-icon-3d">{ic}</div><div class="tip-title-3d">{ti}</div><div class="tip-desc-3d">{de}</div></div>
-""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="tip-card-3d" style="--tip-color:#00b4ff;"><div class="tip-icon-3d">{ic}</div><div class="tip-title-3d">{ti}</div><div class="tip-desc-3d">{de}</div></div>""", unsafe_allow_html=True)
 
 # ================================
 # 16. FOOTER
@@ -2408,11 +1921,8 @@ for col, (ic, ti, de) in zip([r2c1, r2c2, r2c3], [
 st.markdown('<div class="holo-divider"></div>', unsafe_allow_html=True)
 
 st.markdown("""
-
-
 <div class="footer-futuristic">
-<div class="footer-brand">PHISHSHIELD AI</div>
-<div class="footer-sub">POWERED BY GOOGLE GEMINI &nbsp;•&nbsp; STAY VIGILANT &nbsp;•&nbsp; STAY SAFE</div>
+    <div class="footer-brand">PHISHSHIELD AI</div>
+    <div class="footer-sub">POWERED BY GOOGLE GEMINI &nbsp;•&nbsp; STAY VIGILANT &nbsp;•&nbsp; STAY SAFE</div>
 </div>
-
 """, unsafe_allow_html=True)
