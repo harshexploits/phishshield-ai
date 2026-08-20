@@ -1128,10 +1128,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Google AdSense verification
+# Google AdSense verification — inject into page head
 import streamlit.components.v1 as components
 components.html("""
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3382996367685285" crossorigin="anonymous"></script>
+<script>
+// Inject meta tag + AdSense script into parent page head
+(function() {
+    // Meta tag for site verification
+    var meta = document.createElement('meta');
+    meta.name = 'google-adsense-account';
+    meta.content = 'ca-pub-3382996367685285';
+    document.head.appendChild(meta);
+
+    // AdSense script
+    var script = document.createElement('script');
+    script.async = true;
+    script.crossOrigin = 'anonymous';
+    script.src = 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3382996367685285';
+    document.head.appendChild(script);
+})();
+</script>
 """, height=0)
 
 # ================================
