@@ -3,262 +3,802 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PhishShield AI — Social Cards</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<title>PhishShield AI — Futuristic Social Cards</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
   font-family: 'Inter', sans-serif;
-  background: #0a0a0f;
+  background: #050510;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 50px;
-  padding: 40px 20px;
+  gap: 60px;
+  padding: 50px 20px;
+  overflow-x: hidden;
 }
 
 .label {
-  color: rgba(255,255,255,0.25);
-  font-size: 12px;
+  color: rgba(255,255,255,0.2);
+  font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 3px;
+  letter-spacing: 4px;
   font-weight: 600;
 }
 
-/* ===== CARD 1: MAIN LAUNCH ===== */
-.card1 {
-  width: 800px;
-  height: 419px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #0d0221 0%, #1a0533 30%, #2d1b69 60%, #0d0221 100%);
-  border: 1px solid rgba(139, 92, 246, 0.3);
+/* ============================================================
+   CARD 1 — HOLOGRAPHIC SHIELD
+   ============================================================ */
+.c1 {
+  width: 820px;
+  height: 460px;
+  border-radius: 20px;
   position: relative;
   overflow: hidden;
-  padding: 48px 56px;
+  background: #0a0a1a;
+}
+.c1::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 600px 400px at 30% 40%, rgba(124,58,237,0.25) 0%, transparent 60%),
+    radial-gradient(ellipse 400px 300px at 75% 60%, rgba(6,182,212,0.2) 0%, transparent 60%),
+    radial-gradient(ellipse 300px 300px at 50% 50%, rgba(59,130,246,0.1) 0%, transparent 50%);
+}
+.c1::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(124,58,237,0.03) 2px,
+    rgba(124,58,237,0.03) 4px
+  );
+  pointer-events: none;
+}
+
+/* Animated grid lines */
+.c1 .grid-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(124,58,237,0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(124,58,237,0.08) 1px, transparent 1px);
+  background-size: 40px 40px;
+  perspective: 500px;
+  transform: rotateX(60deg);
+  transform-origin: center 120%;
+  opacity: 0.5;
+  mask-image: linear-gradient(to top, rgba(0,0,0,0.6) 0%, transparent 50%);
+}
+
+.c1 .content {
+  position: relative;
+  z-index: 2;
+  padding: 44px 52px;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
+}
+
+.c1 .top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.c1 .shield-wrap {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.c1 .shield-icon {
+  width: 56px;
+  height: 56px;
+  background: linear-gradient(135deg, rgba(124,58,237,0.3), rgba(6,182,212,0.3));
+  border: 1px solid rgba(124,58,237,0.4);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
   justify-content: center;
+  font-size: 28px;
+  box-shadow: 0 0 30px rgba(124,58,237,0.3), inset 0 0 20px rgba(124,58,237,0.1);
 }
-.card1::before {
-  content: '';
-  position: absolute;
-  top: -40%; right: -15%;
-  width: 400px; height: 400px;
-  background: radial-gradient(circle, rgba(139,92,246,0.15) 0%, transparent 70%);
-  border-radius: 50%;
+
+.c1 .brand {
+  font-family: 'Orbitron', monospace;
+  font-size: 22px;
+  font-weight: 900;
+  color: #fff;
+  letter-spacing: 2px;
 }
-.card1::after {
-  content: '';
-  position: absolute;
-  bottom: -30%; left: -10%;
-  width: 350px; height: 350px;
-  background: radial-gradient(circle, rgba(59,130,246,0.1) 0%, transparent 70%);
-  border-radius: 50%;
-}
-.card1 .badge {
-  position: absolute;
-  top: 28px; right: 32px;
-  background: linear-gradient(135deg, #10b981, #059669);
-  color: white;
-  padding: 6px 16px;
+
+.c1 .live-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(16,185,129,0.1);
+  border: 1px solid rgba(16,185,129,0.3);
   border-radius: 20px;
-  font-size: 12px;
+  padding: 6px 16px;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 1px;
-  z-index: 2;
+  color: #10b981;
+  letter-spacing: 2px;
+  text-transform: uppercase;
 }
-.card1 .shield { font-size: 36px; position: relative; z-index: 2; margin-bottom: 12px; }
-.card1 h1 {
-  font-size: 40px; font-weight: 900; color: #fff;
-  line-height: 1.1; position: relative; z-index: 2;
+
+.c1 .live-dot {
+  width: 6px; height: 6px;
+  background: #10b981;
+  border-radius: 50%;
+  box-shadow: 0 0 8px #10b981;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.5); }
+}
+
+.c1 .hero {
+  margin-top: -10px;
+}
+
+.c1 .hero h1 {
+  font-size: 52px;
+  font-weight: 900;
+  color: #fff;
+  line-height: 1.05;
+  text-shadow: 0 0 40px rgba(124,58,237,0.3);
+}
+
+.c1 .hero h1 .grad {
+  background: linear-gradient(135deg, #a78bfa 0%, #06b6d4 50%, #3b82f6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 20px rgba(124,58,237,0.4));
+}
+
+.c1 .hero p {
+  font-size: 16px;
+  color: rgba(255,255,255,0.5);
+  margin-top: 12px;
+  line-height: 1.6;
   max-width: 500px;
 }
-.card1 h1 span {
-  background: linear-gradient(135deg, #a78bfa, #60a5fa);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-}
-.card1 .tagline {
-  font-size: 16px; color: rgba(255,255,255,0.65);
-  margin-top: 14px; position: relative; z-index: 2;
-  max-width: 480px; line-height: 1.5;
-}
-.card1 .features {
-  display: flex; gap: 12px; margin-top: 28px;
-  position: relative; z-index: 2; flex-wrap: wrap;
-}
-.card1 .feat {
-  display: flex; align-items: center; gap: 7px;
-  background: rgba(139,92,246,0.1);
-  border: 1px solid rgba(139,92,246,0.2);
-  border-radius: 10px; padding: 7px 14px;
-}
-.card1 .feat .ic { font-size: 16px; }
-.card1 .feat .tx { color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 600; }
-.card1 .url {
-  position: absolute; bottom: 28px; left: 56px;
-  font-size: 14px; color: rgba(255,255,255,0.4);
-  font-weight: 600; z-index: 2; letter-spacing: 0.5px;
+
+.c1 .tags {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-/* ===== CARD 2: FEATURES ===== */
-.card2 {
-  width: 800px; height: 500px; border-radius: 16px;
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
-  border: 1px solid rgba(56,189,248,0.2);
-  position: relative; overflow: hidden; padding: 40px 56px;
-}
-.card2::before {
-  content: '';
-  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-  background: 
-    radial-gradient(circle at 20% 50%, rgba(56,189,248,0.05) 0%, transparent 50%),
-    radial-gradient(circle at 80% 30%, rgba(168,85,247,0.05) 0%, transparent 50%);
-}
-.card2 h2 {
-  font-size: 30px; font-weight: 900; color: #fff;
-  position: relative; z-index: 2; margin-bottom: 28px;
-}
-.card2 h2 span {
-  background: linear-gradient(135deg, #38bdf8, #a78bfa);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-}
-.card2 .grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
-  position: relative; z-index: 2;
-}
-.card2 .gi {
-  background: rgba(255,255,255,0.03);
+.c1 .tag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255,255,255,0.04);
   border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 12px; padding: 18px;
+  border-radius: 10px;
+  padding: 8px 16px;
+  backdrop-filter: blur(10px);
 }
-.card2 .gi .em { font-size: 24px; margin-bottom: 8px; }
-.card2 .gi h3 { color: #fff; font-size: 14px; font-weight: 700; margin-bottom: 4px; }
-.card2 .gi p { color: rgba(255,255,255,0.45); font-size: 11px; line-height: 1.4; }
-.card2 .bar {
-  position: absolute; bottom: 28px; left: 56px; right: 56px;
-  display: flex; justify-content: space-between; align-items: center;
+
+.c1 .tag .t-icon { font-size: 16px; }
+
+.c1 .tag .t-text {
+  color: rgba(255,255,255,0.8);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.c1 .corner-url {
+  position: absolute;
+  bottom: 20px; right: 32px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.2);
+  font-weight: 600;
+  letter-spacing: 1px;
+  z-index: 3;
+}
+
+/* Floating orbs */
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  animation: float 6s ease-in-out infinite;
+  pointer-events: none;
+}
+.orb-1 { width: 200px; height: 200px; background: rgba(124,58,237,0.15); top: -50px; right: 100px; animation-delay: 0s; }
+.orb-2 { width: 150px; height: 150px; background: rgba(6,182,212,0.12); bottom: -30px; left: 200px; animation-delay: 2s; }
+.orb-3 { width: 100px; height: 100px; background: rgba(59,130,246,0.1); top: 50%; left: -20px; animation-delay: 4s; }
+
+@keyframes float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(15px, -20px) scale(1.1); }
+  66% { transform: translate(-10px, 10px) scale(0.95); }
+}
+
+/* ============================================================
+   CARD 2 — CYBERSCANNER HUD
+   ============================================================ */
+.c2 {
+  width: 820px;
+  height: 520px;
+  border-radius: 20px;
+  position: relative;
+  overflow: hidden;
+  background: #080818;
+  border: 1px solid rgba(6,182,212,0.15);
+}
+
+.c2::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 500px 400px at 50% 0%, rgba(6,182,212,0.12) 0%, transparent 60%),
+    radial-gradient(ellipse 300px 300px at 80% 80%, rgba(124,58,237,0.08) 0%, transparent 50%);
+}
+
+/* Scan line animation */
+.c2 .scanline {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(6,182,212,0.4), transparent);
+  z-index: 3;
+  animation: scanDown 4s linear infinite;
+}
+
+@keyframes scanDown {
+  0% { top: 0; opacity: 1; }
+  100% { top: 100%; opacity: 0.3; }
+}
+
+/* Corner brackets */
+.c2 .bracket {
+  position: absolute;
+  width: 30px; height: 30px;
+  border-color: rgba(6,182,212,0.4);
+  border-style: solid;
+  z-index: 3;
+}
+.c2 .br-tl { top: 16px; left: 16px; border-width: 2px 0 0 2px; }
+.c2 .br-tr { top: 16px; right: 16px; border-width: 2px 2px 0 0; }
+.c2 .br-bl { bottom: 16px; left: 16px; border-width: 0 0 2px 2px; }
+.c2 .br-br { bottom: 16px; right: 16px; border-width: 0 2px 2px 0; }
+
+.c2 .header {
+  padding: 28px 40px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
   z-index: 2;
 }
-.card2 .stats { display: flex; gap: 28px; }
-.card2 .stat { text-align: center; }
-.card2 .stat .n { font-size: 20px; font-weight: 900; color: #a78bfa; }
-.card2 .stat .l { font-size: 10px; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 1px; }
-.card2 .bar .url { font-size: 14px; color: rgba(255,255,255,0.35); font-weight: 600; }
 
-/* ===== CARD 3: CTA ===== */
-.card3 {
-  width: 800px; height: 400px; border-radius: 16px;
-  background: linear-gradient(135deg, #0d0221 0%, #1a0533 50%, #0d0221 100%);
-  border: 1px solid rgba(139,92,246,0.3);
-  position: relative; overflow: hidden;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  text-align: center; padding: 40px;
+.c2 .header .title-area {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
-.card3::before {
-  content: '';
-  position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  width: 500px; height: 500px;
-  background: radial-gradient(circle, rgba(139,92,246,0.12) 0%, transparent 70%);
+
+.c2 .header .hex-icon {
+  width: 44px; height: 44px;
+  background: linear-gradient(135deg, rgba(6,182,212,0.2), rgba(6,182,212,0.05));
+  border: 1px solid rgba(6,182,212,0.3);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+
+.c2 .header h2 {
+  font-family: 'Orbitron', monospace;
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 3px;
+}
+
+.c2 .header .status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: rgba(6,182,212,0.7);
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.c2 .header .status .dot {
+  width: 6px; height: 6px;
+  background: #06b6d4;
   border-radius: 50%;
+  box-shadow: 0 0 10px #06b6d4;
 }
-.card3 .big { font-size: 60px; position: relative; z-index: 2; margin-bottom: 16px; }
-.card3 h2 {
-  font-size: 38px; font-weight: 900; color: #fff;
-  position: relative; z-index: 2;
+
+.c2 .divider {
+  margin: 0 40px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(6,182,212,0.2), transparent);
+  position: relative;
+  z-index: 2;
 }
-.card3 h2 span {
-  background: linear-gradient(135deg, #a78bfa, #60a5fa);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+
+.c2 .features {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  padding: 24px 40px;
+  position: relative;
+  z-index: 2;
 }
-.card3 .sub {
-  font-size: 16px; color: rgba(255,255,255,0.55);
-  margin-top: 12px; position: relative; z-index: 2;
+
+.c2 .f-item {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s;
 }
-.card3 .btn {
-  margin-top: 28px;
+
+.c2 .f-item::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(6,182,212,0.3), transparent);
+}
+
+.c2 .f-item .f-icon { font-size: 28px; margin-bottom: 10px; }
+
+.c2 .f-item h3 {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.c2 .f-item p {
+  color: rgba(255,255,255,0.35);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.c2 .bottom-stats {
+  position: absolute;
+  bottom: 20px; left: 40px; right: 40px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 2;
+}
+
+.c2 .stat-row { display: flex; gap: 28px; }
+
+.c2 .stat-item { text-align: center; }
+
+.c2 .stat-item .s-num {
+  font-family: 'Orbitron', monospace;
+  font-size: 20px;
+  font-weight: 900;
+  background: linear-gradient(135deg, #06b6d4, #a78bfa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.c2 .stat-item .s-label {
+  font-size: 9px;
+  color: rgba(255,255,255,0.3);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-top: 2px;
+}
+
+.c2 .url-label {
+  font-size: 12px;
+  color: rgba(255,255,255,0.2);
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+/* ============================================================
+   CARD 3 — NEON THREAT DETECTOR
+   ============================================================ */
+.c3 {
+  width: 820px;
+  height: 460px;
+  border-radius: 20px;
+  position: relative;
+  overflow: hidden;
+  background: #0a0014;
+  border: 1px solid rgba(168,85,247,0.2);
+}
+
+.c3::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 22px;
+  background: conic-gradient(from 0deg, rgba(168,85,247,0.3), rgba(59,130,246,0.3), rgba(6,182,212,0.3), rgba(16,185,129,0.3), rgba(245,158,11,0.3), rgba(239,68,68,0.3), rgba(168,85,247,0.3));
+  z-index: 0;
+  animation: rotateBorder 8s linear infinite;
+}
+
+@keyframes rotateBorder {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+.c3::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: 20px;
+  background: #0a0014;
+  z-index: 0;
+}
+
+.c3 .c3-content {
+  position: relative;
+  z-index: 2;
+  padding: 44px 52px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.c3 .c3-top {
+  display: flex;
+  gap: 40px;
+  align-items: flex-start;
+}
+
+.c3 .shield-3d {
+  width: 120px;
+  height: 120px;
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.c3 .shield-3d::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(168,85,247,0.2), rgba(59,130,246,0.1));
+  border-radius: 24px;
+  transform: perspective(400px) rotateY(-8deg) rotateX(5deg);
+  border: 1px solid rgba(168,85,247,0.25);
+  box-shadow:
+    0 20px 60px rgba(168,85,247,0.2),
+    0 0 40px rgba(168,85,247,0.1),
+    inset 0 0 30px rgba(168,85,247,0.05);
+}
+
+.c3 .shield-3d .s-emoji {
+  font-size: 50px;
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 0 20px rgba(168,85,247,0.5));
+}
+
+.c3 .c3-text h1 {
+  font-size: 42px;
+  font-weight: 900;
+  color: #fff;
+  line-height: 1.1;
+}
+
+.c3 .c3-text h1 .neon {
+  background: linear-gradient(135deg, #c084fc 0%, #818cf8 40%, #60a5fa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 15px rgba(168,85,247,0.5));
+}
+
+.c3 .c3-text p {
+  font-size: 15px;
+  color: rgba(255,255,255,0.45);
+  margin-top: 10px;
+  line-height: 1.6;
+  max-width: 400px;
+}
+
+.c3 .threat-bars {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.c3 .t-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+  padding: 10px 18px;
+}
+
+.c3 .t-bar .t-icon { font-size: 18px; }
+
+.c3 .t-bar .t-info .t-name {
+  color: rgba(255,255,255,0.85);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.c3 .t-bar .t-info .t-desc {
+  color: rgba(255,255,255,0.3);
+  font-size: 10px;
+}
+
+.c3 .c3-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.c3 .meter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.c3 .meter-label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.3);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.c3 .meter-bar {
+  width: 200px;
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.c3 .meter-fill {
+  width: 92%;
+  height: 100%;
+  background: linear-gradient(90deg, #a78bfa, #06b6d4, #10b981);
+  border-radius: 3px;
+  box-shadow: 0 0 12px rgba(168,85,247,0.4);
+}
+
+.c3 .meter-val {
+  font-family: 'Orbitron', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: #a78bfa;
+}
+
+.c3 .cta-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.c3 .try-btn {
   background: linear-gradient(135deg, #7c3aed, #3b82f6);
-  color: white; padding: 12px 40px; border-radius: 50px;
-  font-size: 17px; font-weight: 700;
-  position: relative; z-index: 2;
+  color: white;
+  padding: 10px 28px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  box-shadow: 0 4px 20px rgba(124,58,237,0.3);
 }
-.card3 .free {
-  margin-top: 16px; color: rgba(255,255,255,0.35);
-  font-size: 14px; position: relative; z-index: 2;
+
+.c3 .free-text {
+  font-size: 12px;
+  color: rgba(255,255,255,0.3);
 }
-.card3 .free b { color: #10b981; }
+
+.c3 .free-text b { color: #10b981; }
 </style>
 </head>
 <body>
 
-<div class="label">1 — Main Launch Post (LinkedIn / Twitter / Instagram)</div>
-<div class="card1">
-  <div class="badge">100% FREE</div>
-  <div class="shield">🛡️</div>
-  <h1>PhishShield <span>AI</span></h1>
-  <div class="tagline">AI-powered phishing detection. Paste a URL, upload a screenshot, or scan a QR code — and know instantly if it's safe.</div>
+<!-- ===== CARD 1: HOLOGRAPHIC SHIELD ===== -->
+<div class="label">Card 1 — Holographic Shield (LinkedIn / Twitter Header)</div>
+<div class="c1">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+  <div class="grid-bg"></div>
+
+  <div class="content">
+    <div class="top-row">
+      <div class="shield-wrap">
+        <div class="shield-icon">🛡️</div>
+        <div class="brand">PHISHSHIELD AI</div>
+      </div>
+      <div class="live-badge">
+        <span class="live-dot"></span>
+        LIVE NOW
+      </div>
+    </div>
+
+    <div class="hero">
+      <h1>AI-Powered<br><span class="grad">Phishing Detection</span></h1>
+      <p>Paste a URL. Upload a screenshot. Scan a QR code.<br>Know instantly if it's safe.</p>
+    </div>
+
+    <div class="tags">
+      <div class="tag"><span class="t-icon">🔗</span><span class="t-text">URL Scan</span></div>
+      <div class="tag"><span class="t-icon">🖼️</span><span class="t-text">Image AI</span></div>
+      <div class="tag"><span class="t-icon">📧</span><span class="t-text">Email Headers</span></div>
+      <div class="tag"><span class="t-icon">📷</span><span class="t-text">QR Decode</span></div>
+      <div class="tag"><span class="t-icon">📋</span><span class="t-text">Batch Mode</span></div>
+    </div>
+  </div>
+
+  <div class="corner-url">phishxrecon.onrender.com</div>
+</div>
+
+<!-- ===== CARD 2: CYBERSCANNER HUD ===== -->
+<div class="label">Card 2 — CyberScanner HUD (Features Showcase)</div>
+<div class="c2">
+  <div class="scanline"></div>
+  <div class="bracket br-tl"></div>
+  <div class="bracket br-tr"></div>
+  <div class="bracket br-bl"></div>
+  <div class="bracket br-br"></div>
+
+  <div class="header">
+    <div class="title-area">
+      <div class="hex-icon">🔍</div>
+      <h2>SCAN MATRIX</h2>
+    </div>
+    <div class="status">
+      <span class="dot"></span>
+      SYSTEM ONLINE
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
   <div class="features">
-    <div class="feat"><span class="ic">🔗</span><span class="tx">URL Analysis</span></div>
-    <div class="feat"><span class="ic">🖼️</span><span class="tx">Image Detection</span></div>
-    <div class="feat"><span class="ic">📧</span><span class="tx">Email Headers</span></div>
-    <div class="feat"><span class="ic">📷</span><span class="tx">QR Scanner</span></div>
-    <div class="feat"><span class="ic">📋</span><span class="tx">Batch Scan</span></div>
-  </div>
-  <div class="url">phishxrecon.onrender.com</div>
-</div>
-
-<div class="label">2 — Features Showcase (Twitter / LinkedIn)</div>
-<div class="card2">
-  <h2>5 Ways to <span>Stay Safe</span></h2>
-  <div class="grid">
-    <div class="gi">
-      <div class="em">🔗</div>
+    <div class="f-item">
+      <div class="f-icon">🔗</div>
       <h3>URL Analysis</h3>
-      <p>Paste any suspicious link. AI checks for phishing, SSL issues & impersonation.</p>
+      <p>AI checks phishing indicators, SSL cert, brand impersonation</p>
     </div>
-    <div class="gi">
-      <div class="em">🖼️</div>
-      <h3>Screenshot Scanner</h3>
-      <p>Upload a screenshot. AI vision detects fake login pages & spoofed brands.</p>
+    <div class="f-item">
+      <div class="f-icon">🖼️</div>
+      <h3>Vision Scanner</h3>
+      <p>Upload screenshots — AI detects fake login pages & spoofed brands</p>
     </div>
-    <div class="gi">
-      <div class="em">📧</div>
-      <h3>Email Header Check</h3>
-      <p>Paste raw headers. Verifies SPF, DKIM, DMARC in plain English.</p>
+    <div class="f-item">
+      <div class="f-icon">📧</div>
+      <h3>Header Inspector</h3>
+      <p>Paste raw headers — verifies SPF, DKIM, DMARC authentication</p>
     </div>
-    <div class="gi">
-      <div class="em">📷</div>
-      <h3>QR Code Scanner</h3>
-      <p>Upload QR image. Decodes & checks for "quishing" attacks.</p>
+    <div class="f-item">
+      <div class="f-icon">📷</div>
+      <h3>QR Threat Scan</h3>
+      <p>Decode QR codes and detect malicious destination URLs</p>
     </div>
-    <div class="gi">
-      <div class="em">📋</div>
-      <h3>Batch URL Scan</h3>
-      <p>Analyze up to 20 URLs at once with color-coded results.</p>
+    <div class="f-item">
+      <div class="f-icon">📋</div>
+      <h3>Batch Analyzer</h3>
+      <p>Scan up to 20 URLs simultaneously with color-coded results</p>
     </div>
-    <div class="gi">
-      <div class="em">🌍</div>
-      <h3>13 Languages</h3>
-      <p>Results in English, Hindi, Spanish, French, Arabic & more.</p>
+    <div class="f-item">
+      <div class="f-icon">🌍</div>
+      <h3>Multi-Language</h3>
+      <p>Results in 13 languages — Hindi, Spanish, French & more</p>
     </div>
   </div>
-  <div class="bar">
-    <div class="stats">
-      <div class="stat"><div class="n">5</div><div class="l">Modes</div></div>
-      <div class="stat"><div class="n">13</div><div class="l">Languages</div></div>
-      <div class="stat"><div class="n">20</div><div class="l">Batch URLs</div></div>
+
+  <div class="bottom-stats">
+    <div class="stat-row">
+      <div class="stat-item">
+        <div class="s-num">5</div>
+        <div class="s-label">Scan Modes</div>
+      </div>
+      <div class="stat-item">
+        <div class="s-num">13</div>
+        <div class="s-label">Languages</div>
+      </div>
+      <div class="stat-item">
+        <div class="s-num">20</div>
+        <div class="s-label">Batch URLs</div>
+      </div>
+      <div class="stat-item">
+        <div class="s-num">∞</div>
+        <div class="s-label">Free Scans</div>
+      </div>
     </div>
-    <div class="url">phishxrecon.onrender.com</div>
+    <div class="url-label">phishxrecon.onrender.com</div>
   </div>
 </div>
 
-<div class="label">3 — Call to Action (Story / Reel Cover)</div>
-<div class="card3">
-  <div class="big">🛡️</div>
-  <h2>Don't Get <span>Phished</span></h2>
-  <div class="sub">Check any URL, email, or QR code in seconds — powered by AI</div>
-  <div class="btn">🔍 Try PhishShield AI</div>
-  <div class="free">No signup · No credit card · <b>100% Free</b></div>
+<!-- ===== CARD 3: NEON THREAT DETECTOR ===== -->
+<div class="label">Card 3 — Neon Threat Detector (CTA / Instagram Story)</div>
+<div class="c3">
+  <div class="c3-content">
+    <div class="c3-top">
+      <div class="shield-3d">
+        <span class="s-emoji">🛡️</span>
+      </div>
+      <div class="c3-text">
+        <h1>Don't Get<br><span class="neon">Phished</span></h1>
+        <p>AI analyzes every URL, email & QR code in real-time. Plain English results. Zero cost.</p>
+      </div>
+    </div>
+
+    <div class="threat-bars">
+      <div class="t-bar">
+        <span class="t-icon">🔗</span>
+        <div class="t-info">
+          <div class="t-name">URL Shield</div>
+          <div class="t-desc">Links & domains</div>
+        </div>
+      </div>
+      <div class="t-bar">
+        <span class="t-icon">🖼️</span>
+        <div class="t-info">
+          <div class="t-name">Vision AI</div>
+          <div class="t-desc">Screenshot scan</div>
+        </div>
+      </div>
+      <div class="t-bar">
+        <span class="t-icon">📧</span>
+        <div class="t-info">
+          <div class="t-name">Email Guard</div>
+          <div class="t-desc">Header analysis</div>
+        </div>
+      </div>
+      <div class="t-bar">
+        <span class="t-icon">📷</span>
+        <div class="t-info">
+          <div class="t-name">QR Scanner</div>
+          <div class="t-desc">Quishing detect</div>
+        </div>
+      </div>
+      <div class="t-bar">
+        <span class="t-icon">⚡</span>
+        <div class="t-info">
+          <div class="t-name">Batch Scan</div>
+          <div class="t-desc">20 URLs at once</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="c3-bottom">
+      <div class="meter">
+        <span class="meter-label">Threat Coverage</span>
+        <div class="meter-bar"><div class="meter-fill"></div></div>
+        <span class="meter-val">92%</span>
+      </div>
+      <div class="cta-row">
+        <div class="try-btn">🔍 TRY NOW — FREE</div>
+        <div class="free-text">No signup · No credit card · <b>100% Free</b></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 </body>
