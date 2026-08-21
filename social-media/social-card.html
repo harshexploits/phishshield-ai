@@ -122,15 +122,51 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(16,185,129,0.1);
-  border: 1px solid rgba(16,185,129,0.3);
+  background: linear-gradient(135deg, rgba(16,185,129,0.15), rgba(6,182,212,0.15));
+  border: 1px solid rgba(16,185,129,0.4);
   border-radius: 20px;
-  padding: 6px 16px;
+  padding: 8px 18px;
   font-size: 11px;
   font-weight: 700;
   color: #10b981;
   letter-spacing: 2px;
   text-transform: uppercase;
+  box-shadow: 0 0 20px rgba(16,185,129,0.2), 0 0 40px rgba(16,185,129,0.1);
+}
+
+/* PREMIUM FREE BANNER — Card 1 */
+.c1 .free-banner {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(16,185,129,0.12), rgba(6,182,212,0.08));
+  border: 1px solid rgba(16,185,129,0.3);
+  border-radius: 14px;
+  padding: 10px 28px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 0 40px rgba(16,185,129,0.15), 0 0 80px rgba(16,185,129,0.05);
+}
+.c1 .free-banner .fb-star {
+  font-size: 20px;
+}
+.c1 .free-banner .fb-text {
+  font-family: 'Orbitron', monospace;
+  font-size: 13px;
+  font-weight: 900;
+  color: #10b981;
+  letter-spacing: 3px;
+  text-shadow: 0 0 20px rgba(16,185,129,0.5);
+}
+.c1 .free-banner .fb-sub {
+  font-size: 10px;
+  color: rgba(16,185,129,0.6);
+  font-weight: 600;
+  letter-spacing: 1px;
 }
 
 .c1 .live-dot {
@@ -207,6 +243,38 @@ body {
   font-weight: 600;
   letter-spacing: 1px;
   z-index: 3;
+}
+
+/* BIG FREE BADGE — bottom left Card 1 */
+.c1 .free-huge {
+  position: absolute;
+  bottom: 16px; left: 52px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.c1 .free-huge .fh-box {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  padding: 6px 16px;
+  border-radius: 8px;
+  font-family: 'Orbitron', monospace;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  box-shadow: 0 4px 20px rgba(16,185,129,0.4), 0 0 40px rgba(16,185,129,0.2);
+  animation: glowPulse 2s ease-in-out infinite;
+}
+.c1 .free-huge .fh-desc {
+  font-size: 11px;
+  color: rgba(16,185,129,0.6);
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 4px 20px rgba(16,185,129,0.4), 0 0 40px rgba(16,185,129,0.2); }
+  50% { box-shadow: 0 4px 30px rgba(16,185,129,0.6), 0 0 60px rgba(16,185,129,0.3); }
 }
 
 /* Floating orbs */
@@ -599,16 +667,7 @@ body {
   gap: 20px;
 }
 
-.c3 .try-btn {
-  background: linear-gradient(135deg, #7c3aed, #3b82f6);
-  color: white;
-  padding: 10px 28px;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  box-shadow: 0 4px 20px rgba(124,58,237,0.3);
-}
+/* old try-btn removed — replaced by glowing version below */
 
 .c3 .free-text {
   font-size: 12px;
@@ -616,6 +675,88 @@ body {
 }
 
 .c3 .free-text b { color: #10b981; }
+
+/* PREMIUM FREE BADGE — Card 3 */
+.c3 .premium-free {
+  position: absolute;
+  top: 20px; right: 24px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: linear-gradient(135deg, rgba(16,185,129,0.12), rgba(6,182,212,0.08));
+  border: 1.5px solid rgba(16,185,129,0.35);
+  border-radius: 16px;
+  padding: 14px 24px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 0 50px rgba(16,185,129,0.15), 0 0 100px rgba(16,185,129,0.05);
+}
+.c3 .premium-free .pf-big {
+  font-family: 'Orbitron', monospace;
+  font-size: 20px;
+  font-weight: 900;
+  background: linear-gradient(135deg, #34d399, #06b6d4);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 4px;
+  text-shadow: none;
+  filter: drop-shadow(0 0 15px rgba(16,185,129,0.5));
+}
+.c3 .premium-free .pf-sub {
+  font-size: 9px;
+  color: rgba(16,185,129,0.5);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* Card 3 CTA button glow */
+.c3 .try-btn {
+  background: linear-gradient(135deg, #7c3aed, #3b82f6);
+  color: white;
+  padding: 12px 32px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  box-shadow: 0 4px 30px rgba(124,58,237,0.4), 0 0 60px rgba(124,58,237,0.15);
+  animation: glowPulse2 2s ease-in-out infinite;
+}
+@keyframes glowPulse2 {
+  0%, 100% { box-shadow: 0 4px 30px rgba(124,58,237,0.4), 0 0 60px rgba(124,58,237,0.15); }
+  50% { box-shadow: 0 4px 40px rgba(124,58,237,0.6), 0 0 80px rgba(124,58,237,0.25); }
+}
+
+/* Card 2 — Free Forever banner */
+.c2 .free-ever {
+  position: absolute;
+  top: 20px; left: 50%; transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(135deg, rgba(16,185,129,0.12), rgba(6,182,212,0.08));
+  border: 1.5px solid rgba(16,185,129,0.35);
+  border-radius: 12px;
+  padding: 8px 24px;
+  backdrop-filter: blur(20px);
+  box-shadow: 0 0 40px rgba(16,185,129,0.12);
+}
+.c2 .free-ever .fe-icon { font-size: 18px; }
+.c2 .free-ever .fe-text {
+  font-family: 'Orbitron', monospace;
+  font-size: 12px;
+  font-weight: 900;
+  color: #10b981;
+  letter-spacing: 3px;
+}
+.c2 .free-ever .fe-sub {
+  font-size: 9px;
+  color: rgba(16,185,129,0.5);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
 </style>
 </head>
 <body>
@@ -640,6 +781,13 @@ body {
       </div>
     </div>
 
+    <!-- BIG FREE BANNER -->
+    <div class="free-banner">
+      <span class="fb-star">💎</span>
+      <span class="fb-text">100% FREE — ALWAYS</span>
+      <span class="fb-sub">No catches. No limits. Forever.</span>
+    </div>
+
     <div class="hero">
       <h1>AI-Powered<br><span class="grad">Phishing Detection</span></h1>
       <p>Paste a URL. Upload a screenshot. Scan a QR code.<br>Know instantly if it's safe.</p>
@@ -654,12 +802,23 @@ body {
     </div>
   </div>
 
+  <!-- HUGE FREE BADGE -->
+  <div class="free-huge">
+    <div class="fh-box">FREE</div>
+    <div class="fh-desc">forever. no catches.</div>
+  </div>
+
   <div class="corner-url">phishxrecon.onrender.com</div>
 </div>
 
 <!-- ===== CARD 2: CYBERSCANNER HUD ===== -->
 <div class="label">Card 2 — CyberScanner HUD (Features Showcase)</div>
 <div class="c2">
+  <div class="free-ever">
+    <span class="fe-icon">👑</span>
+    <span class="fe-text">FREE FOREVER</span>
+    <span class="fe-sub">Premium tool · Zero cost</span>
+  </div>
   <div class="scanline"></div>
   <div class="bracket br-tl"></div>
   <div class="bracket br-tr"></div>
@@ -738,6 +897,11 @@ body {
 <!-- ===== CARD 3: NEON THREAT DETECTOR ===== -->
 <div class="label">Card 3 — Neon Threat Detector (CTA / Instagram Story)</div>
 <div class="c3">
+  <!-- PREMIUM FREE BADGE -->
+  <div class="premium-free">
+    <span class="pf-big">FREE</span>
+    <span class="pf-sub">always & forever</span>
+  </div>
   <div class="c3-content">
     <div class="c3-top">
       <div class="shield-3d">
@@ -795,7 +959,7 @@ body {
       </div>
       <div class="cta-row">
         <div class="try-btn">🔍 TRY NOW — FREE</div>
-        <div class="free-text">No signup · No credit card · <b>100% Free</b></div>
+        <div class="free-text">No signup · No credit card · <b>Always 100% Free</b></div>
       </div>
     </div>
   </div>
