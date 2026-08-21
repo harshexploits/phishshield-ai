@@ -2,9 +2,9 @@ name: Keep Alive
 
 on:
   schedule:
-    # Every 4 minutes (cron minimum is 5, but GitHub supports */4 with workflow_dispatch)
-    - cron: '*/5 * * * *'
-  workflow_dispatch:  # Manual trigger button
+    # Every minute (minimum allowed by GitHub Actions)
+    - cron: '* * * * *'
+  workflow_dispatch:
 
 jobs:
   ping:
@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Ping PhishShield AI
         run: |
-          echo "Pinging https://phishxrecon.onrender.com at $(date -u)"
-          curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" https://phishxrecon.onrender.com/_stcore/health || true
-          sleep 10
-          curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" https://phishxrecon.onrender.com/ || true
+          echo "Pinging at $(date -u)"
+          curl -s -o /dev/null -w "Health: %{http_code}\n" https://phishxrecon.onrender.com/_stcore/health || true
+          sleep 5
+          curl -s -o /dev/null -w "Home: %{http_code}\n" https://phishxrecon.onrender.com/ || true
