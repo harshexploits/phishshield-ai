@@ -5,4 +5,3 @@ requests
 opencv-python-headless
 fpdf2
 python-whois
-aiohttp
