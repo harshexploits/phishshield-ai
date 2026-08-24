@@ -20,23 +20,49 @@ subprocess.Popen([
     "--browser.gatherUsageStats", "false",
 ])
 
-# Wait for Streamlit to fully start
-time.sleep(8)
+# Wait for Streamlit to be actually ready (health check loop)
+print("Waiting for Streamlit to start...")
+for i in range(60):
+    time.sleep(2)
+    try:
+        import urllib.request
+        urllib.request.urlopen(f"http://127.0.0.1:{STREAMLIT_PORT}/_stcore/health", timeout=3)
+        print(f"Streamlit ready after {(i+1)*2}s")
+        break
+    except Exception:
+        if i % 5 == 0:
+            print(f"  still waiting... ({(i+1)*2}s)")
+else:
+    print("WARNING: Streamlit did not start in 120s, proxying anyway")
 
 ADS_TXT = b"google.com, pub-3382996367685285, DIRECT, f08c47fec0942fa0\n"
 
 
 async def proxy_ws(request):
-    """Forward WebSocket connections to Streamlit."""
+    """Forward WebSocket connections to Streamlit, including subprotocol."""
     ws_server = web.WebSocketResponse()
     await ws_server.prepare(request)
 
     target = f"ws://127.0.0.1:{STREAMLIT_PORT}{request.path_qs}"
+
+    # Extract subprotocol from client request (Streamlit needs this)
+    subprotocols = request.headers.get("Sec-WebSocket-Protocol", "")
+    extra_headers = {}
+    if subprotocols:
+        extra_headers["Sec-WebSocket-Protocol"] = subprotocols
+
     try:
         session = aiohttp.ClientSession()
-        ws_client = await session.ws_connect(target)
+        ws_client = await session.ws_connect(
+            target,
+            headers=extra_headers,
+        )
     except Exception as e:
-        await ws_server.close()
+        print(f"WS connect error: {e}")
+        try:
+            await ws_server.close()
+        except Exception:
+            pass
         return ws_server
 
     async def forward(src, dst):
@@ -46,9 +72,8 @@ async def proxy_ws(request):
                     await dst.send_str(msg.data)
                 elif msg.type == aiohttp.WSMsgType.BINARY:
                     await dst.send_bytes(msg.data)
-                elif msg.type == aiohttp.WSMsgType.CLOSE:
-                    break
-                elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING):
+                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING,
+                                  aiohttp.WSMsgType.ERROR):
                     break
         except Exception:
             pass
