@@ -1,6 +1,8 @@
 """
 PhishShield AI — Render deployment
-Serves /ads.txt for AdSense, proxies everything else to Streamlit (incl. WebSocket).
+/ads.txt served directly.
+HTTP + WebSocket proxied to Streamlit.
+Key fix: Forward WebSocket subprotocol via aiohttp's `protocols` param.
 """
 import subprocess, sys, os, time, asyncio
 import aiohttp
@@ -8,6 +10,7 @@ from aiohttp import web
 
 PORT = int(os.environ.get("PORT", "8501"))
 STREAMLIT_PORT = 8502
+STREAMLIT_HOST = "127.0.0.1"
 
 # Start Streamlit in background
 subprocess.Popen([
@@ -20,45 +23,45 @@ subprocess.Popen([
     "--browser.gatherUsageStats", "false",
 ])
 
-# Wait for Streamlit to be actually ready (health check loop)
-print("Waiting for Streamlit to start...")
+# Health-check loop
+print("Waiting for Streamlit...")
 for i in range(60):
     time.sleep(2)
     try:
         import urllib.request
-        urllib.request.urlopen(f"http://127.0.0.1:{STREAMLIT_PORT}/_stcore/health", timeout=3)
-        print(f"Streamlit ready after {(i+1)*2}s")
+        urllib.request.urlopen(f"http://{STREAMLIT_HOST}:{STREAMLIT_PORT}/_stcore/health", timeout=3)
+        print(f"Streamlit ready ({(i+1)*2}s)")
         break
     except Exception:
         if i % 5 == 0:
-            print(f"  still waiting... ({(i+1)*2}s)")
+            print(f"  waiting... ({(i+1)*2}s)")
 else:
-    print("WARNING: Streamlit did not start in 120s, proxying anyway")
+    print("WARNING: Streamlit did not start in 120s")
 
 ADS_TXT = b"google.com, pub-3382996367685285, DIRECT, f08c47fec0942fa0\n"
 
 
 async def proxy_ws(request):
-    """Forward WebSocket connections to Streamlit, including subprotocol."""
+    """Forward WebSocket to Streamlit, including subprotocol."""
     ws_server = web.WebSocketResponse()
     await ws_server.prepare(request)
 
-    target = f"ws://127.0.0.1:{STREAMLIT_PORT}{request.path_qs}"
+    target = f"ws://{STREAMLIT_HOST}:{STREAMLIT_PORT}{request.path_qs}"
 
-    # Extract subprotocol from client request (Streamlit needs this)
-    subprotocols = request.headers.get("Sec-WebSocket-Protocol", "")
-    extra_headers = {}
-    if subprotocols:
-        extra_headers["Sec-WebSocket-Protocol"] = subprotocols
+    # CRITICAL: Extract subprotocols and pass via `protocols` param
+    subprotocols = []
+    proto_header = request.headers.get("Sec-WebSocket-Protocol", "")
+    if proto_header:
+        subprotocols = [p.strip() for p in proto_header.split(",")]
 
     try:
         session = aiohttp.ClientSession()
         ws_client = await session.ws_connect(
             target,
-            headers=extra_headers,
+            protocols=subprotocols,  # THIS is the key fix
         )
     except Exception as e:
-        print(f"WS connect error: {e}")
+        print(f"WS error: {e}")
         try:
             await ws_server.close()
         except Exception:
@@ -72,7 +75,8 @@ async def proxy_ws(request):
                     await dst.send_str(msg.data)
                 elif msg.type == aiohttp.WSMsgType.BINARY:
                     await dst.send_bytes(msg.data)
-                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING,
+                elif msg.type in (aiohttp.WSMsgType.CLOSE,
+                                  aiohttp.WSMsgType.CLOSING,
                                   aiohttp.WSMsgType.ERROR):
                     break
         except Exception:
@@ -99,8 +103,8 @@ async def proxy_ws(request):
 
 
 async def proxy_http(request):
-    """Forward HTTP requests to Streamlit."""
-    target = f"http://127.0.0.1:{STREAMLIT_PORT}{request.path_qs}"
+    """Forward HTTP to Streamlit."""
+    target = f"http://{STREAMLIT_HOST}:{STREAMLIT_PORT}{request.path_qs}"
     try:
         async with aiohttp.ClientSession() as session:
             body = await request.read()
@@ -124,15 +128,12 @@ async def proxy_http(request):
 
 
 async def handler(request):
-    # Serve ads.txt directly
     if request.path == "/ads.txt":
         return web.Response(text=ADS_TXT.decode(), content_type="text/plain")
 
-    # WebSocket upgrade → proxy WS
     if request.headers.get("Upgrade", "").lower() == "websocket":
         return await proxy_ws(request)
 
-    # Everything else → proxy HTTP
     return await proxy_http(request)
 
 
