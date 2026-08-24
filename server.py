@@ -1,8 +1,9 @@
 """
-PhishShield AI — Render deployment with ads.txt serving
-Starts Streamlit in background, aiohttp proxy in foreground.
+PhishShield AI — Render deployment
+Serves /ads.txt for AdSense, proxies everything else to Streamlit (incl. WebSocket).
 """
-import subprocess, sys, os, time
+import subprocess, sys, os, time, asyncio
+import aiohttp
 from aiohttp import web
 
 PORT = int(os.environ.get("PORT", "8501"))
@@ -19,47 +20,97 @@ subprocess.Popen([
     "--browser.gatherUsageStats", "false",
 ])
 
-# Wait for Streamlit to be ready
-time.sleep(5)
+# Wait for Streamlit to fully start
+time.sleep(8)
 
-# ads.txt content
 ADS_TXT = b"google.com, pub-3382996367685285, DIRECT, f08c47fec0942fa0\n"
 
-# aiohttp handler
+
+async def proxy_ws(request):
+    """Forward WebSocket connections to Streamlit."""
+    ws_server = web.WebSocketResponse()
+    await ws_server.prepare(request)
+
+    target = f"ws://127.0.0.1:{STREAMLIT_PORT}{request.path_qs}"
+    try:
+        session = aiohttp.ClientSession()
+        ws_client = await session.ws_connect(target)
+    except Exception as e:
+        await ws_server.close()
+        return ws_server
+
+    async def forward(src, dst):
+        try:
+            async for msg in src:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    await dst.send_str(msg.data)
+                elif msg.type == aiohttp.WSMsgType.BINARY:
+                    await dst.send_bytes(msg.data)
+                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    break
+                elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING):
+                    break
+        except Exception:
+            pass
+
+    try:
+        await asyncio.gather(
+            forward(ws_server, ws_client),
+            forward(ws_client, ws_server),
+        )
+    except Exception:
+        pass
+    finally:
+        try:
+            await ws_client.close()
+        except Exception:
+            pass
+        try:
+            await session.close()
+        except Exception:
+            pass
+
+    return ws_server
+
+
+async def proxy_http(request):
+    """Forward HTTP requests to Streamlit."""
+    target = f"http://127.0.0.1:{STREAMLIT_PORT}{request.path_qs}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            body = await request.read()
+            headers = {
+                k: v for k, v in request.headers.items()
+                if k.lower() not in ("host", "transfer-encoding")
+            }
+            async with session.request(
+                request.method, target, headers=headers, data=body
+            ) as resp:
+                resp_body = await resp.read()
+                resp_headers = {
+                    k: v for k, v in resp.headers.items()
+                    if k.lower() not in ("transfer-encoding", "content-encoding")
+                }
+                return web.Response(
+                    status=resp.status, body=resp_body, headers=resp_headers
+                )
+    except Exception as e:
+        return web.Response(status=502, text=f"Backend unavailable: {e}")
+
+
 async def handler(request):
+    # Serve ads.txt directly
     if request.path == "/ads.txt":
         return web.Response(text=ADS_TXT.decode(), content_type="text/plain")
 
-    import aiohttp as aio
-    target = f"http://127.0.0.1:{STREAMLIT_PORT}{request.path_qs}"
-
-    # WebSocket proxy
+    # WebSocket upgrade → proxy WS
     if request.headers.get("Upgrade", "").lower() == "websocket":
-        ws_server = web.WebSocketResponse()
-        await ws_server.prepare(request)
-        async with aio.ClientSession() as session:
-            async with session.ws_connect(target) as ws_client:
-                async def fwd(src, dst):
-                    async for msg in src:
-                        if msg.type in (aio.WSMsgType.TEXT, aio.WSMsgType.BINARY):
-                            await dst.send_bytes(msg.data)
-                        elif msg.type == aio.WSMsgType.CLOSE:
-                            break
-                await asyncio.gather(fwd(ws_server, ws_client), fwd(ws_client, ws_server))
-        return ws_server
+        return await proxy_ws(request)
 
-    # HTTP proxy
-    async with aio.ClientSession() as session:
-        body = await request.read()
-        headers = {k: v for k, v in request.headers.items()
-                   if k.lower() not in ("host", "transfer-encoding")}
-        async with session.request(request.method, target, headers=headers, data=body) as resp:
-            resp_body = await resp.read()
-            resp_headers = {k: v for k, v in resp.headers.items()
-                           if k.lower() not in ("transfer-encoding", "content-encoding")}
-            return web.Response(status=resp.status, body=resp_body, headers=resp_headers)
+    # Everything else → proxy HTTP
+    return await proxy_http(request)
 
-import asyncio
+
 app = web.Application()
 app.router.add_route("*", "/{path_info:.*}", handler)
 
