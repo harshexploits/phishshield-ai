@@ -2,7 +2,7 @@
 PhishShield AI — Render deployment
 /ads.txt served directly.
 HTTP + WebSocket proxied to Streamlit.
-Key fix: Forward WebSocket subprotocol via aiohttp's `protocols` param.
+Key fix: Sec-WebSocket-Protocol sent via extra_headers (protocols param deprecated).
 """
 import subprocess, sys, os, time, asyncio
 import aiohttp
@@ -30,38 +30,39 @@ for i in range(60):
     try:
         import urllib.request
         urllib.request.urlopen(f"http://{STREAMLIT_HOST}:{STREAMLIT_PORT}/_stcore/health", timeout=3)
-        print(f"Streamlit ready ({(i+1)*2}s)")
+        print(f"Ready ({(i+1)*2}s)")
         break
     except Exception:
         if i % 5 == 0:
             print(f"  waiting... ({(i+1)*2}s)")
 else:
-    print("WARNING: Streamlit did not start in 120s")
+    print("WARNING: Streamlit not ready in 120s")
 
 ADS_TXT = b"google.com, pub-3382996367685285, DIRECT, f08c47fec0942fa0\n"
 
 
 async def proxy_ws(request):
-    """Forward WebSocket to Streamlit, including subprotocol."""
+    """Forward WebSocket to Streamlit, manually sending subprotocol."""
     ws_server = web.WebSocketResponse()
     await ws_server.prepare(request)
 
     target = f"ws://{STREAMLIT_HOST}:{STREAMLIT_PORT}{request.path_qs}"
 
-    # CRITICAL: Extract subprotocols and pass via `protocols` param
-    subprotocols = []
-    proto_header = request.headers.get("Sec-WebSocket-Protocol", "")
-    if proto_header:
-        subprotocols = [p.strip() for p in proto_header.split(",")]
+    # Get subprotocols from client and send via extra_headers
+    subprotocol_header = request.headers.get("Sec-WebSocket-Protocol", "")
+    extra_headers = {}
+    if subprotocol_header:
+        extra_headers["Sec-WebSocket-Protocol"] = subprotocol_header
 
     try:
         session = aiohttp.ClientSession()
         ws_client = await session.ws_connect(
             target,
-            protocols=subprotocols,  # THIS is the key fix
+            headers=extra_headers,  # This forces the header to be sent
         )
+        print(f"WS connected to Streamlit (proto: {subprotocol_header})")
     except Exception as e:
-        print(f"WS error: {e}")
+        print(f"WS connect error: {e}")
         try:
             await ws_server.close()
         except Exception:
